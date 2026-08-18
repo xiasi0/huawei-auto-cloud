@@ -17,7 +17,7 @@ except ModuleNotFoundError:
         pass
 
 from .api import AitoApiClient, AitoApiError, AitoCommandError
-from .auth import P256KeyPair, extract_credentials, extract_vehicle_authorization, session_key_status
+from .auth import P256KeyPair, extract_credentials, extract_vehicle_authorization, extract_vehicle_enterprise_code, session_key_status
 from .const import (
     CONF_ACCESS_TOKEN,
     CONF_APIG_AUTHORIZATION,
@@ -416,6 +416,7 @@ class AitoDataCoordinator(DataUpdateCoordinator[dict[str, dict[str, Any]]]):
                 device_model=str(identity.get("device_model") or DEFAULT_DEVICE_MODEL),
                 native_device_model=str(identity.get("native_device_model") or DEFAULT_NATIVE_DEVICE_MODEL),
                 user_id=str(user_id) if user_id else None,
+                ec=self.client.enterprise_code,
             )
         except AitoApiError as error:
             if _is_auth_failure(error):
@@ -424,6 +425,9 @@ class AitoDataCoordinator(DataUpdateCoordinator[dict[str, dict[str, Any]]]):
         authorization = extract_vehicle_authorization(vehicle_session)
         if not authorization:
             raise ConfigEntryAuthFailed("AITO relogin vehicle auth did not return accessToken")
+        found_ec = extract_vehicle_enterprise_code(vehicle_session)
+        if found_ec:
+            self.client.enterprise_code = found_ec
         self.client.apig_authorization = str(authorization)
         self.assets[CONF_APIG_AUTHORIZATION] = str(authorization)
         self._sync_session_context(

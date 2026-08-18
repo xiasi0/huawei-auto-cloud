@@ -36,6 +36,28 @@ AITO_CLIENT_ID = "104872091"
 
 OMP_BASE_URL = "https://omp.uopes.cn"
 APIG_BASE_URL = "https://apig.fgaiservice.com"
+# IVCS/APIG gateway per automotive enterprise. SERES (AITO/问界) uses
+# apig.fgaiservice.com; LUXEED/CHERY (智界) uses its own Huawei-Cloud-WAF
+# fronted gateway. Unknown enterprises fall back to APIG_BASE_URL.
+APIG_BASE_URLS = {
+    "SERES": "https://apig.fgaiservice.com",
+    "CHERY": "https://apir.chssatsp.icvcs.com",
+}
+
+# Vehicle-authorization enterprise codes are probed in this order. HarmonyOS
+# 智行 (SmartDrive) manages multiple brands under one Huawei account; each
+# brand is issued its own vehicle tokens (e.g. CHERY for 智界/LUXEED vehicles).
+# The empty string keeps the legacy behaviour (no enterprise filter).
+ENTERPRISE_CODES = (
+    "",
+    "SERES",
+    "LUXEED",
+    "CHERY",
+    "STELATO",
+    "BAIC",
+    "MAEXTRO",
+    "JAC",
+)
 DEFAULT_OMP_CLIENT_TYPE = "ios"
 DEFAULT_DEVICE_MODEL = "iPhone"
 DEFAULT_NATIVE_DEVICE_MODEL = "iPhone8,1"

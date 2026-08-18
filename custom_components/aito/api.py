@@ -12,6 +12,7 @@ from urllib.parse import quote, urlencode
 from urllib.request import Request, urlopen
 
 from .const import (
+    APIG_BASE_URLS,
     APIG_BASE_URL,
     DEFAULT_APIG_CLIENT_VERSION,
     DEFAULT_DEVICE_MODEL,
@@ -45,15 +46,18 @@ DEFAULT_DYNAMIC_INFO_SECTIONS: JSON = {
 
 
 class AitoApiError(RuntimeError):
-    def __init__(self, status: int, response: Any) -> None:
+    def __init__(self, status: int, response: Any, *, url: str | None = None) -> None:
         safe_response = _safe_error_response(response)
         message = f"AITO request failed with HTTP {status}"
+        if url:
+            message = f"{message} on {url}"
         response_summary = _safe_response_summary(safe_response)
         if response_summary:
             message = f"{message}: {response_summary}"
         super().__init__(message)
         self.status = status
         self.response = safe_response
+        self.url = url
 
 
 class AitoCommandError(RuntimeError):
@@ -79,7 +83,6 @@ class AitoApiClient:
         apig_verify_ssl: bool = True,
     ) -> None:
         self.omp_base_url = omp_base_url.rstrip("/")
-        self.apig_base_url = apig_base_url.rstrip("/")
         self.apig_authorization = apig_authorization
         self.apig_client_version = apig_client_version
         self.ivcs_device_id = ivcs_device_id
@@ -92,6 +95,27 @@ class AitoApiClient:
             if isinstance(name, str) and isinstance(value, str) and name and value
         }
         self._omp_warm_attempted = False
+        # Enterprise code used on OMP requests and APIG gateway selection.
+        # Defaults to SERES (AITO/问界); callers set this to the account's
+        # real enterprise once known (e.g. CHERY for LUXEED/智界 vehicles).
+        self._enterprise_code = DEFAULT_VEHICLE_EC
+        self._apig_base_url = apig_base_url.rstrip("/")
+
+    @property
+    def enterprise_code(self) -> str:
+        return self._enterprise_code
+
+    @enterprise_code.setter
+    def enterprise_code(self, value: str) -> None:
+        """Set the enterprise code and switch the APIG gateway accordingly."""
+        self._enterprise_code = value
+        gateway = APIG_BASE_URLS.get(value)
+        if gateway:
+            self._apig_base_url = gateway.rstrip("/")
+
+    @property
+    def apig_base_url(self) -> str:
+        return self._apig_base_url
 
     def user_auth(
         self,
@@ -165,9 +189,10 @@ class AitoApiClient:
         device_id: str,
         device_model: str = DEFAULT_DEVICE_MODEL,
         native_device_model: str = DEFAULT_NATIVE_DEVICE_MODEL,
-        ec: str = DEFAULT_VEHICLE_EC,
+        ec: str | None = None,
         user_id: str | None = None,
     ) -> Any:
+        ec = self.enterprise_code if ec is None else ec
         payload: JSON = {
             "tokenType": 0,
             "requireAccountId": False,
@@ -206,11 +231,12 @@ class AitoApiClient:
         device_id: str,
         device_model: str = DEFAULT_DEVICE_MODEL,
         native_device_model: str = DEFAULT_NATIVE_DEVICE_MODEL,
-        ec: str = DEFAULT_VEHICLE_EC,
+        ec: str | None = None,
         user_id: str | None = None,
         refresh: bool = True,
     ) -> Any:
         """Return the official OMP vehicle profile and feature list."""
+        ec = self.enterprise_code if ec is None else ec
         payload: JSON = {
             "refreshFlag": "true" if refresh else "false",
             "deviceInfo": {"type": "1", "id": device_id, "model": device_model},
@@ -227,10 +253,11 @@ class AitoApiClient:
         *,
         xid: str,
         native_device_model: str = DEFAULT_NATIVE_DEVICE_MODEL,
-        ec: str = DEFAULT_VEHICLE_EC,
+        ec: str | None = None,
         user_id: str | None = None,
     ) -> Any:
         """Return the official OMP dictionary records for the requested codes."""
+        ec = self.enterprise_code if ec is None else ec
         return self._post_omp(
             "/xcar/omp/xbs/v2/queryBatchDictItem",
             {"dicItemCodes": codes},
@@ -369,7 +396,7 @@ class AitoApiClient:
         body = None if method == "GET" else json.dumps(payload or {}, ensure_ascii=False).encode("utf-8")
         return self._request(
             method,
-            f"{self.apig_base_url}/{path.lstrip('/')}",
+            f"{self._apig_base_url}/{path.lstrip('/')}",
             _apig_headers(authorization, self.apig_client_version, self.ivcs_device_id, vehicle_id),
             body,
             transport=self.apig_transport,
@@ -419,7 +446,7 @@ class AitoApiClient:
             self._capture_cookies(response_headers)
         response = _decode_response(response_body)
         if status >= 400:
-            raise AitoApiError(status, response)
+            raise AitoApiError(status, response, url=url)
         return response
 
     def _capture_cookies(self, headers: dict[str, str]) -> None:

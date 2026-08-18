@@ -17,6 +17,7 @@ from .api import AitoApiClient, AitoApiError
 from .auth import (
     P256KeyPair,
     extract_credentials,
+    extract_vehicle_enterprise_code,
     extract_vehicle_authorization,
     session_key_status,
 )
@@ -42,6 +43,7 @@ from .const import (
     CONF_SERVICE_USER_INFO,
     CONF_USER_INFO,
     CONF_VEHICLE_RESOURCES,
+    ENTERPRISE_CODES,
     CONF_VEHICLES,
     CONF_XID,
     DEFAULT_DEVICE_MODEL,
@@ -258,20 +260,60 @@ class AitoConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             raise AitoLoginRejected("user auth did not return xid")
         user_info = credentials.get(CONF_USER_INFO)
         omp_user_id = user_info.get("userId") if isinstance(user_info, dict) else user_id
-        vehicle_response = client.vehicle_auth(
-            xid=str(xid),
-            device_id=omp_device_id,
-            device_model=str(identity.get("device_model") or DEFAULT_DEVICE_MODEL),
-            native_device_model=str(identity.get("native_device_model") or DEFAULT_NATIVE_DEVICE_MODEL),
-            user_id=str(omp_user_id) if omp_user_id else None,
-        )
-        apig_authorization = extract_vehicle_authorization(vehicle_response)
+        vehicle_response = None
+        apig_authorization = None
+        # HarmonyOS 智行 manages several brands under one Huawei account; each
+        # brand issues its own vehicle tokens, so probe enterprise codes in
+        # order. The empty string keeps the legacy behaviour (no filter).
+        for ec in ENTERPRISE_CODES:
+            try:
+                vehicle_response = client.vehicle_auth(
+                    xid=str(xid),
+                    device_id=omp_device_id,
+                    device_model=str(identity.get("device_model") or DEFAULT_DEVICE_MODEL),
+                    native_device_model=str(identity.get("native_device_model") or DEFAULT_NATIVE_DEVICE_MODEL),
+                    user_id=str(omp_user_id) if omp_user_id else None,
+                    ec=ec,
+                )
+                apig_authorization = extract_vehicle_authorization(vehicle_response, enterprise_code=ec or "SERES")
+            except Exception as error:
+                # Any failure (HTTP/network/timeout) means this enterprise
+                # code is not usable; keep probing the remaining codes.
+                _LOGGER.debug("AITO vehicle_auth ec=%r rejected: %s", ec, error)
+            if apig_authorization:
+                found_ec = extract_vehicle_enterprise_code(vehicle_response) or ec or client.enterprise_code
+                if found_ec:
+                    client.enterprise_code = found_ec
+                _LOGGER.debug("AITO vehicle_auth OK with enterprise=%s", found_ec)
+                break
         if not apig_authorization:
             raise ValueError("vehicle authorization not returned")
+
+        # The native app follows vehicle/auth with vehicle/refresh (with the
+        # enterprise-code header) to exchange the initial token for a usable
+        # one; the initial token is rejected by APIG with 401 Token invalid.
+        try:
+            refreshed = client.vehicle_refresh(
+                xid=str(xid),
+                device_id=omp_device_id,
+                device_model=str(identity.get("device_model") or DEFAULT_DEVICE_MODEL),
+                native_device_model=str(identity.get("native_device_model") or DEFAULT_NATIVE_DEVICE_MODEL),
+                user_id=str(omp_user_id) if omp_user_id else None,
+            )
+            refreshed_auth = extract_vehicle_authorization(refreshed)
+            if refreshed_auth:
+                apig_authorization = refreshed_auth
+                _LOGGER.debug("AITO vehicle_refresh OK after auth")
+                found_ec2 = extract_vehicle_enterprise_code(refreshed)
+                if found_ec2:
+                    client.enterprise_code = found_ec2
+        except AitoApiError as error:
+            _LOGGER.warning("AITO vehicle_refresh after auth failed; continuing with initial token: %s", error)
 
         client.apig_authorization = apig_authorization
         vehicles = client.apig_vehicles()
         vehicle_items = vehicles if isinstance(vehicles, list) else vehicles.get("data", []) if isinstance(vehicles, dict) else []
+
         profiles: dict[str, dict[str, Any]] = {}
         resource_manifests: dict[str, dict[str, str | None]] = {}
         if self._reauth_entry is None:
@@ -281,6 +323,7 @@ class AitoConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 device_id=omp_device_id,
                 user_id=str(omp_user_id) if omp_user_id else None,
                 identity=identity,
+                fallback_items=vehicle_items,
             )
             vehicle_ids = {
                 str(item.get("vehicleIdStr") or item.get("vehicleId") or "")
@@ -344,6 +387,7 @@ class AitoConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         device_id: str,
         user_id: str | None,
         identity: dict[str, Any],
+        fallback_items: list[dict[str, Any]] | None = None,
     ) -> tuple[dict[str, dict[str, Any]], dict[str, dict[str, str | None]]]:
         response = client.vehicle_management_list(
             xid=xid,
@@ -361,6 +405,21 @@ class AitoConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 profiles[vehicle.id] = vehicle.profile.as_storage()
                 if resource_manifest := vehicle_resource_manifest(item):
                     resource_manifests[vehicle.id] = resource_manifest
+        # SERES returns vehicle profiles from OMP vehicle/management/list;
+        # CHERY/LUXEED returns an empty vehicleMargeInfoList there, so fall
+        # back to the APIG /vcam/v1/accounts/vehicles entries themselves.
+        if not profiles and fallback_items:
+            _LOGGER.debug("AITO OMP profile list empty; falling back to APIG vehicle items")
+            for item in fallback_items:
+                vehicle = Vehicle.from_api(item)
+                if not vehicle.id:
+                    continue
+                stored = vehicle.profile.as_storage()
+                if not stored.get("enterpriseCode"):
+                    stored["enterpriseCode"] = client.enterprise_code
+                if not stored.get("modelName") and vehicle.model:
+                    stored["modelName"] = vehicle.model
+                profiles[vehicle.id] = stored
         if not profiles:
             raise AitoLoginRejected("vehicle profile lookup returned no vehicles")
         return profiles, resource_manifests

@@ -29,6 +29,21 @@ if TYPE_CHECKING:
 _LOGGER = logging.getLogger(__name__)
 
 
+def _restore_enterprise_code(client: AitoApiClient, vehicles: list[Vehicle]) -> None:
+    """Set the client's enterprise code to the vehicle's (OMP headers and APIG gateway).
+
+    SERES is the default; brands like CHERY/LUXEED must use their own gateway
+    (see APIG_BASE_URLS) or the API rejects the token with 401. For accounts
+    with vehicles from multiple enterprises the first vehicle wins.
+    """
+    restored_ec = next(
+        (v.profile.enterprise_code for v in vehicles if v.profile.enterprise_code), None
+    )
+    if restored_ec:
+        client.enterprise_code = restored_ec
+        _LOGGER.debug("AITO restored enterprise_code=%s (gateway=%s)", restored_ec, client.apig_base_url)
+
+
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     from .const import (
         CONF_APIG_AUTHORIZATION,
@@ -113,6 +128,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         omp_cookies=_saved_session_context(assets, identity).get("omp_cookies"),
         apig_verify_ssl=False,
     )
+    _restore_enterprise_code(client, vehicles)
     coordinator = None
     if vehicle_specs:
         coordinator = AitoDataCoordinator(
@@ -302,6 +318,7 @@ async def _async_capture_raw_status_snapshots(
         ivcs_device_id=device_id,
         apig_verify_ssl=False,
     )
+    _restore_enterprise_code(client, vehicles)
     snapshots: dict[str, dict[str, Any]] = {}
     for vehicle in vehicles:
         try:

@@ -5,7 +5,7 @@ from typing import Any, Mapping
 
 from .const import DOMAIN
 
-_MANUFACTURER_NAMES = {"SERES": "赛力斯"}
+_MANUFACTURER_NAMES = {"SERES": "赛力斯", "CHERY": "奇瑞"}
 
 
 @dataclass(frozen=True)
@@ -24,8 +24,17 @@ class Vehicle:
         vin = source.get("vin") or source.get("vinCode")
         profile = VehicleProfile.from_api(data)
         model = profile.model_name or source.get("modelName") or source.get("vehicleModel") or source.get("seriesName")
+        plate = source.get("licensePlate") or source.get("plateNo")
         sw_version = firmware_sw_version(data) or firmware_sw_version(source)
-        name = source.get("aliasName") or profile.model_name or source.get("vehicleName") or source.get("nickname") or model or _fallback_name(vehicle_id)
+        name = (
+            source.get("aliasName")
+            or profile.model_name
+            or source.get("vehicleName")
+            or source.get("nickname")
+            or model
+            or (str(plate) if plate else None)
+            or _fallback_name(vehicle_id)
+        )
         return cls(
             id=vehicle_id,
             name=str(name),

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import logging
 import secrets
 from dataclasses import dataclass
 from typing import Any
@@ -8,6 +9,8 @@ from typing import Any
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.hazmat.primitives.asymmetric.utils import decode_dss_signature
+
+_LOGGER = logging.getLogger(__name__)
 
 
 def b64url(data: bytes) -> str:
@@ -163,19 +166,94 @@ def _find_session_key(value: Any) -> str | None:
 
 
 def extract_vehicle_authorization(response: Any, enterprise_code: str = "SERES") -> str | None:
-    for token in _find_vehicle_tokens(response):
+    tokens = _find_vehicle_tokens(response)
+    for token in tokens:
         if not isinstance(token, dict):
             continue
         if token.get("enterpriseCode") == enterprise_code and token.get("accessToken"):
             return str(token["accessToken"])
+    # Fallback: accept the first token carrying an access token regardless of
+    # enterprise (LUXEED/CHERY/STELATO/MAEXTRO accounts will not match SERES).
+    for token in tokens:
+        if isinstance(token, dict) and token.get("accessToken"):
+            return str(token["accessToken"])
+    _LOGGER.debug(
+        "AITO vehicle token lookup failed: looking_for=%s token_count=%s token_entries=%s",
+        enterprise_code,
+        len(tokens),
+        [
+            {
+                "enterpriseCode": t.get("enterpriseCode") if isinstance(t, dict) else None,
+                "keys": sorted(t.keys()) if isinstance(t, dict) else None,
+                "has_access_token": bool(t.get("accessToken")) if isinstance(t, dict) else None,
+            }
+            for t in tokens
+        ],
+    )
+    _LOGGER.debug(
+        "AITO vehicle token lookup failed: response_shape=%s",
+        _shape_summary(response, depth=0, max_depth=4),
+    )
     return None
+
+
+def extract_vehicle_enterprise_code(response: Any) -> str | None:
+    """Return the enterprise code of the first usable vehicle token, if any."""
+    for token in _find_vehicle_tokens(response):
+        if isinstance(token, dict) and token.get("accessToken"):
+            enterprise_code = token.get("enterpriseCode")
+            return str(enterprise_code) if enterprise_code else None
+    return None
+
+
+# Keys whose values must never reach the logs, plus a structural fallback for
+# any free-form strings (see _shape_summary).
+_SENSITIVE_KEYS = frozenset({
+    "accessToken", "refreshToken", "sessionKey", "password", "pw", "at", "rt",
+    "authorization", "access_token", "token", "ticket", "vin", "plateNo",
+    "licensePlate", "phone", "mobileNumber", "mobile", "idNumber", "idType",
+    "xid", "deviceId",
+})
+
+
+def _shape_summary(value: Any, depth: int, max_depth: int) -> Any:
+    """Non-sensitive structural summary of the upstream response."""
+    if depth > max_depth:
+        return "..."
+    if isinstance(value, dict):
+        out: dict[str, Any] = {}
+        for key, item in value.items():
+            # Secret-bearing keys (and any free-form strings) are replaced by
+            # a placeholder so DEBUG logs can never leak credentials or PII.
+            if key in _SENSITIVE_KEYS or isinstance(item, str):
+                out[key] = "<SECRET>"
+            else:
+                out[key] = _shape_summary(item, depth + 1, max_depth)
+        return out
+    if isinstance(value, list):
+        if not value:
+            return []
+        inner = _shape_summary(value[0], depth + 1, max_depth)
+        more = len(value) - 1
+        return [inner, f"...+{more} more"] if more else [inner]
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        if isinstance(value, str) and len(value) > 60:
+            return value[:24] + "...(len=%d)" % len(value)
+        return value
+    return type(value).__name__
 
 
 def _find_vehicle_tokens(value: Any) -> list[Any]:
     if isinstance(value, dict):
         token_list = value.get("vehicleTokenInfoList")
-        if isinstance(token_list, list):
+        # An EMPTY list must fall through to the flat-token branch below
+        # (vehicle/refresh returns a flat object, not a list).
+        if token_list:
             return token_list
+        # /account/vehicle/refresh returns a flat single-token object
+        # (top-level accessToken + enterpriseCode) instead of a list.
+        if value.get("accessToken") is not None:
+            return [value]
         for nested in value.values():
             found = _find_vehicle_tokens(nested)
             if found:
