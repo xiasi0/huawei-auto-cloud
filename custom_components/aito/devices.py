@@ -844,6 +844,7 @@ DEVICES: tuple[VehicleSpec, ...] = (
         key="luxeed_r7",
         enterprise_code="CHERY",
         project_code="",
+        supports_now_departure_plan=True,
         supports_sentry_mode=True,
         supports_air_conditioner=True,
         supports_location=True,
