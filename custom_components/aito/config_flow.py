@@ -54,7 +54,7 @@ from .const import (
     scan_interval_seconds,
 )
 from .huawei_auth import HuaweiAuthError, HuaweiIosAuthClient
-from .models import Vehicle, firmware_sw_version, vehicle_merge_items, vehicle_resource_manifest
+from .models import Vehicle, VehicleProfile, firmware_sw_version, vehicle_merge_items, vehicle_resource_manifest
 from .resources import AitoResourceError, cache_vehicle_resources, remove_vehicle_resources
 from .storage import (
     AitoAssetStore,
@@ -389,22 +389,43 @@ class AitoConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         identity: dict[str, Any],
         fallback_items: list[dict[str, Any]] | None = None,
     ) -> tuple[dict[str, dict[str, Any]], dict[str, dict[str, str | None]]]:
-        response = client.vehicle_management_list(
-            xid=xid,
-            device_id=device_id,
-            device_model=str(identity.get("device_model") or DEFAULT_DEVICE_MODEL),
-            native_device_model=str(identity.get("native_device_model") or DEFAULT_NATIVE_DEVICE_MODEL),
-            user_id=user_id,
-        )
-
         profiles: dict[str, dict[str, Any]] = {}
         resource_manifests: dict[str, dict[str, str | None]] = {}
-        for item in vehicle_merge_items(response):
-            vehicle = Vehicle.from_api(item)
-            if vehicle.id:
-                profiles[vehicle.id] = vehicle.profile.as_storage()
-                if resource_manifest := vehicle_resource_manifest(item):
-                    resource_manifests[vehicle.id] = resource_manifest
+
+        # CHERY (智界) uses a dedicated APIR endpoint per static HIMA analysis:
+        # GET /vcam/v1/accounts/vehicle-infos/{vehicleId} on
+        # https://apir.chssatsp.icvcs.com (not OMP vehicle/management/list).
+        # Try APIR first when the enterprise is CHERY; SERES keeps OMP.
+        if (client.enterprise_code or "").upper() == "CHERY" and fallback_items:
+            apir_profiles, apir_manifests = self._chery_apir_profiles(client, fallback_items)
+            if apir_profiles:
+                profiles.update(apir_profiles)
+                resource_manifests.update(apir_manifests)
+                _LOGGER.warning(
+                    "AITO CHERY APIR vehicle-infos profiles=%s",
+                    sorted(profiles.keys()),
+                )
+
+        if not profiles:
+            response = client.vehicle_management_list(
+                xid=xid,
+                device_id=device_id,
+                device_model=str(identity.get("device_model") or DEFAULT_DEVICE_MODEL),
+                native_device_model=str(identity.get("native_device_model") or DEFAULT_NATIVE_DEVICE_MODEL),
+                user_id=user_id,
+            )
+            _LOGGER.warning(
+                "AITO vehicle_management_list shape=%s",
+                _safe_keys(response) if isinstance(response, dict) else type(response).__name__,
+            )
+
+            for item in vehicle_merge_items(response):
+                vehicle = Vehicle.from_api(item)
+                if vehicle.id:
+                    profiles[vehicle.id] = vehicle.profile.as_storage()
+                    if resource_manifest := vehicle_resource_manifest(item):
+                        resource_manifests[vehicle.id] = resource_manifest
+
         # SERES returns vehicle profiles from OMP vehicle/management/list;
         # CHERY/LUXEED returns an empty vehicleMargeInfoList there, so fall
         # back to the APIG /vcam/v1/accounts/vehicles entries themselves.
@@ -423,6 +444,55 @@ class AitoConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         if not profiles:
             raise AitoLoginRejected("vehicle profile lookup returned no vehicles")
         return profiles, resource_manifests
+
+    def _chery_apir_profiles(
+        self,
+        client: AitoApiClient,
+        fallback_items: list[dict[str, Any]],
+    ) -> tuple[dict[str, dict[str, Any]], dict[str, dict[str, str | None]]]:
+        """Fetch CHERY per-vehicle APIR profile (may fail; caller falls back)."""
+        profiles: dict[str, dict[str, Any]] = {}
+        manifests: dict[str, dict[str, str | None]] = {}
+        for item in fallback_items:
+            if not isinstance(item, dict):
+                continue
+            vehicle_id = str(item.get("vehicleIdStr") or item.get("vehicleId") or "")
+            if not vehicle_id:
+                continue
+            try:
+                raw = client.apig_vehicle_info(vehicle_id)
+            except Exception as err:  # noqa: BLE001 - probe must not break login
+                _LOGGER.warning("AITO CHERY vehicle-infos %s failed: %s", vehicle_id, err)
+                continue
+            _LOGGER.warning(
+                "AITO CHERY vehicle-infos %s shape=%s",
+                vehicle_id,
+                _safe_keys(raw) if isinstance(raw, (dict, list)) else type(raw).__name__,
+            )
+            parsed = _parse_chery_vehicle_info(raw, fallback_item=item, enterprise_code=client.enterprise_code)
+            if parsed is None:
+                _LOGGER.warning("AITO CHERY vehicle-infos %s: no profile fields, keeping APIG fallback", vehicle_id)
+                continue
+            vehicle = Vehicle.from_api(parsed)
+            # Vehicle.from_api derives id from vehicleIdStr/vehicleId — ensure it matches
+            vid = vehicle.id or vehicle_id
+            stored = vehicle.profile.as_storage()
+            # Preserve enterprise from live gateway if APIR omits it
+            if not stored.get("enterpriseCode"):
+                stored["enterpriseCode"] = client.enterprise_code or "CHERY"
+            # Do NOT fabricate modelCode/projectCode — keep empty so
+            # DEVICES luxeed_r7 (CHERY, project_code="") still matches safely.
+            # Only fill human-readable modelName if APIR left it blank.
+            if not stored.get("modelName"):
+                stored["modelName"] = vehicle.model or "智界 R7"
+            profiles[vid] = stored
+            # Resource manifest may live in the APIR payload if present
+            candidate = parsed if isinstance(parsed, dict) else {}
+            if resource_manifest := vehicle_resource_manifest(candidate):
+                manifests[vid] = resource_manifest
+            elif resource_manifest := vehicle_resource_manifest(raw if isinstance(raw, dict) else {}):
+                manifests[vid] = resource_manifest
+        return profiles, manifests
 
     def _attach_current_version(self, client: AitoApiClient, stored_vehicle: dict[str, Any]) -> None:
         try:
@@ -589,6 +659,100 @@ def _ensure_trusted_omp_session(
 def _has_stored_vehicles(data: dict[str, Any]) -> bool:
     vehicles = data.get(CONF_VEHICLES)
     return isinstance(vehicles, list) and any(isinstance(vehicle, dict) and vehicle.get("vehicleIdStr") for vehicle in vehicles)
+
+
+def _parse_chery_vehicle_info(
+    raw: Any,
+    *,
+    fallback_item: dict[str, Any] | None = None,
+    enterprise_code: str | None = None,
+) -> dict[str, Any] | None:
+    """Normalize CHERY APIR vehicle-infos payload into a Vehicle.from_api dict.
+
+    Unknown APIR shape: probe common wrappers (data/result/vehicleInfo),
+    then extract only known profile-like keys. Returns None if nothing
+    profile-like is found (caller keeps existing APIG fallback).
+    Response field names are NOT assumed beyond documented candidates;
+    non-profile wrappers are ignored.
+    """
+    if raw is None:
+        return None
+    # Unwrap common envelope keys without assuming nesting
+    candidate: Any = raw
+    if isinstance(raw, dict):
+        for key in ("data", "result", "vehicleInfo", "vehicle", "info"):
+            inner = raw.get(key)
+            if isinstance(inner, dict) and inner:
+                candidate = inner
+                break
+        # APIR may return a list with one entry
+        if isinstance(candidate, list) and candidate and isinstance(candidate[0], dict):
+            candidate = candidate[0]
+        if isinstance(raw.get("data"), list) and raw["data"] and isinstance(raw["data"][0], dict):
+            # prefer list form if dict form was empty wrapper
+            if not isinstance(candidate, dict) or not candidate:
+                candidate = raw["data"][0]
+
+    if not isinstance(candidate, dict):
+        return None
+
+    # Collect only profile-relevant keys; VehicleProfile.from_api reads
+    # these from base dict (via _vehicle_base_info). Also preserve id.
+    allowed_keys = {
+        "vehicleIdStr",
+        "vehicleId",
+        "id",
+        "vin",
+        "vinCode",
+        "modelCode",
+        "modelName",
+        "enterpriseCode",
+        "projectCode",
+        "fullMaterialNo",
+        "powerType",
+        "vehConfigUpdateTime",
+        "vehPlatformVersion",
+        "vehicleBaseInfo",
+        "vehicleFeatures",
+        "vehicleResourceInfo",
+        "licensePlate",
+        "plateNo",
+        "aliasName",
+        "vehicleName",
+    }
+    # Also keep any isSupport*/support* flags if APIR carries them
+    extracted: dict[str, Any] = {}
+    for key, value in candidate.items():
+        if key in allowed_keys or key.startswith("isSupport") or key in {
+            "supportVent",
+            "supportHotSeats",
+            "supportVentSeats",
+            "minACTemp",
+            "maxACTemp",
+            "frontTrunkSupportType",
+            "secondSeatSupportHeatType",
+        }:
+            extracted[key] = value
+
+    # Seed identity from fallback APIG item if APIR omits it
+    if fallback_item:
+        for key in ("vehicleIdStr", "vehicleId", "vin", "vinCode", "licensePlate"):
+            if not extracted.get(key) and fallback_item.get(key):
+                extracted[key] = fallback_item[key]
+    if enterprise_code and not extracted.get("enterpriseCode"):
+        extracted["enterpriseCode"] = enterprise_code
+
+    # Decide if we got anything useful: at least one real model/vehicle signal
+    # (enterpriseCode alone is not enough — it is injected from fallback).
+    has_profile_signal = any(
+        extracted.get(k) for k in ("modelCode", "modelName", "projectCode", "vehicleBaseInfo", "fullMaterialNo", "vehicleFeatures", "vehicleResourceInfo")
+    )
+    # Also accept raw candidate having those keys even if filtered extraction missed
+    if not has_profile_signal and isinstance(candidate, dict):
+        has_profile_signal = any(candidate.get(k) for k in ("modelCode", "modelName", "projectCode", "vehicleBaseInfo", "fullMaterialNo", "vehicleFeatures", "vehicleResourceInfo"))
+    if not has_profile_signal:
+        return None
+    return extracted
 
 
 def _password_selector() -> Any:

@@ -224,6 +224,23 @@ class AitoApiClient:
     def apig_vehicles(self) -> Any:
         return self._request_apig("GET", "/vcam/v1/accounts/vehicles")
 
+    def apig_account_base(self) -> Any:
+        return self._request_apig("GET", "/vcam/v1/accounts/base")
+
+    def apig_vehicle_detail(self, vehicle_id: str) -> Any:
+        return self._request_apig("GET", f"/vcam/v1/vehicles/{quote(vehicle_id, safe='')}")
+
+    def apig_vehicle_info(self, vehicle_id: str) -> Any:
+        """CHERY APIR vehicle profile (HIMA getVehicleInfoWithVehicleId).
+
+        Route: GET /vcam/v1/accounts/vehicle-infos/{vehicleId} on
+        https://apir.chssatsp.icvcs.com . Body is empty (param=nil in
+        static analysis), auth via APIG Authorization + enterprise gateway.
+        Static HIMA reference: +[IVCSMultiVehicleApi
+        getVehicleInfoWithVehicleId:userToken:projectCode:completion:].
+        """
+        return self._request_apig("GET", f"/vcam/v1/accounts/vehicle-infos/{quote(vehicle_id, safe='')}")
+
     def vehicle_management_list(
         self,
         *,

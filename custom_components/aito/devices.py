@@ -834,16 +834,15 @@ DEVICES: tuple[VehicleSpec, ...] = (
             ),
         ),
     ),
-# LUXEED R7 (智界 R7, made by Chery) — the enterprise code CHERY was
-# confirmed from a live login (vehicle_auth returns tokens with
-# enterpriseCode=CHERY). The project code is not yet known because OMP
-# vehicle/management/list returns an empty list for CHERY, so it is left
-# blank to match any CHERY vehicle. Tighten it once the real project code
-# is captured (e.g. by capturing the official app's traffic).
+# LUXEED R7 (智界 R7, 奇瑞) spec — enterprise CHERY, projectCode +
+# modelCode confirmed by live APIR vehicle-infos on 2026-08-21
+# (vehicleId/vin/plate redacted):
+#   projectCode=EHY-REEV-2025MY, modelCode=E6500R8RRHBX2508
+#   modelName=智界 R7 2026款 Max+ 增程 五座 后驱 53kWh
     VehicleSpec(
         key="luxeed_r7",
         enterprise_code="CHERY",
-        project_code="",
+        project_code="EHY-REEV-2025MY",
         supports_now_departure_plan=True,
         supports_sentry_mode=True,
         supports_air_conditioner=True,
