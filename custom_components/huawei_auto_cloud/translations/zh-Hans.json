@@ -2,8 +2,8 @@
   "config": {
     "step": {
       "user": {
-        "title": "AITO 登录",
-        "description": "请使用已在 AITO App 中获得车辆服务权限的华为账号。首次添加需接收并输入短信验证码。\n\n为支持后续自动续期，集成会在本地加密保存账号密码和固定设备身份。\n\n建议使用专用于 Home Assistant 的账号；在 AITO App 或其他设备登录同一账号，可能导致集成需要重新认证。",
+        "title": "Huawei Auto Cloud 登录",
+        "description": "使用已开通车辆服务的华为账号。首次配置需要短信验证码；集成会在本地保存必要会话和稳定设备标识。建议使用专用 Home Assistant 账号，其他客户端登录可能要求本集成重新认证。",
         "data": {
           "phone": "华为账号手机号",
           "password": "华为账号密码"
@@ -11,25 +11,26 @@
       },
       "sms": {
         "title": "短信验证",
-        "description": "请输入华为发送到该账号手机号的短信验证码。验证码仅用于本次首次登录验证。",
+        "description": "请输入发送到该华为账号手机号的短信验证码。",
         "data": {
           "sms_code": "短信验证码"
         }
       }
     },
     "error": {
-      "cannot_connect": "无法连接 AITO 服务，请稍后重试。",
+      "cannot_connect": "无法连接华为车辆服务，请稍后重试。",
       "invalid_auth": "华为账号认证失败，请检查手机号、密码和短信验证码。",
-      "no_vehicles": "登录成功，但该账号没有返回车辆。"
+      "no_vehicles": "登录成功，但该账号没有返回受支持车型。"
+    },
+    "abort": {
+      "reauth_successful": "Huawei Auto Cloud 认证已更新。",
+      "reauth_failed": "已保存的 Huawei Auto Cloud 账号身份不可用，请删除并重新添加集成。"
     }
-  },
-  "abort": {
-    "reauth_successful": "AITO 认证信息已更新。"
   },
   "options": {
     "step": {
       "init": {
-        "title": "AITO 选项",
+        "title": "Huawei Auto Cloud 选项",
         "data": {
           "scan_interval": "轮询间隔（秒）"
         }
@@ -40,6 +41,9 @@
     "sensor": {
       "raw_vehicle_status": {
         "name": "原始车辆状态"
+      },
+      "model": {
+        "name": "车型"
       },
       "battery_soc": {
         "name": "电池电量"
@@ -57,19 +61,19 @@
         "name": "剩余充电时间"
       },
       "electric_wltc_remaining_mileage": {
-        "name": "纯电 WLTC 剩余里程"
+        "name": "纯电续航"
       },
       "wltc_remaining_mileage": {
-        "name": "整车 WLTC 剩余里程"
+        "name": "续航"
       },
       "total_mileage": {
         "name": "总里程"
       },
       "fuel_wltc_remaining_mileage": {
-        "name": "燃油 WLTC 剩余里程"
+        "name": "燃油续航"
       },
       "fuel_remaining": {
-        "name": "剩余燃油"
+        "name": "燃油余量"
       },
       "average_power_consumption": {
         "name": "平均电耗"
@@ -78,16 +82,34 @@
         "name": "平均油耗"
       },
       "sum_remaining_mileage": {
-        "name": "综合剩余里程"
+        "name": "综合续航"
+      },
+      "last_updated_at": {
+        "name": "车辆更新时间"
+      },
+      "last_online_at": {
+        "name": "最后在线时间"
       },
       "charge_status": {
-        "name": "充电状态"
+        "name": "充电状态",
+        "state": {
+          "not_charging": "未充电",
+          "connected_not_charging": "已连接、未充电",
+          "charging": "充电中",
+          "complete": "充电完成",
+          "fault": "充电故障",
+          "paused": "充电暂停",
+          "stopped": "充电已停止",
+          "preheating": "电池预热中",
+          "scheduled": "预约充电",
+          "unknown": "未知"
+        }
       },
       "vehicle_move_status": {
         "name": "车辆移动状态",
         "state": {
-          "0": "停泊中",
-          "1": "行驶中",
+          "0": "驻车",
+          "1": "行驶",
           "2": "准备中"
         }
       },
@@ -108,15 +130,6 @@
       },
       "tire_pressure_right_back": {
         "name": "右后胎压"
-      },
-      "last_updated_at": {
-        "name": "车端数据时间"
-      },
-      "last_online_at": {
-        "name": "车辆最后在线"
-      },
-      "model": {
-        "name": "车型"
       }
     },
     "switch": {
@@ -133,9 +146,9 @@
         "state_attributes": {
           "preset_mode": {
             "state": {
-              "rapid_cool": "速冷",
-              "rapid_heat": "速热",
-              "defrost": "除霜"
+              "rapid_cool": "快速制冷",
+              "rapid_heat": "快速制热",
+              "defrost": "前挡除霜"
             }
           }
         }
@@ -143,7 +156,12 @@
     },
     "device_tracker": {
       "location": {
-        "name": "位置"
+        "name": "车辆位置"
+      }
+    },
+    "binary_sensor": {
+      "vehicle_online": {
+        "name": "车辆在线"
       }
     }
   }

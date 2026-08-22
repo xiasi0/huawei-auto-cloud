@@ -19,7 +19,7 @@ _CAR_IMAGE_PREFERRED = "carmodel/12_skeleton/background.png"
 _CAR_IMAGE_SEARCH_PREFIX = "carmodel/"
 
 
-class AitoResourceError(RuntimeError):
+class VehicleResourceError(RuntimeError):
     pass
 
 
@@ -141,7 +141,7 @@ def extract_car_image(archive: str | Path, destination: str | Path) -> bool:
                     chosen = max(pngs, key=lambda name: bundle.getinfo(name).file_size)
                 payload = bundle.read(chosen)
     except (zipfile.BadZipFile, OSError) as error:
-        raise AitoResourceError("could not read vehicle resource archive") from error
+        raise VehicleResourceError("could not read vehicle resource archive") from error
     if not payload:
         return False
     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -175,7 +175,7 @@ def cache_vehicle_resources(
                 try:
                     download(resource_url, temporary)
                     if not temporary.is_file() or temporary.stat().st_size == 0:
-                        raise AitoResourceError("resource archive is empty")
+                        raise VehicleResourceError("resource archive is empty")
                     os.replace(temporary, archive)
                     created_files.append(archive)
                 finally:
@@ -190,17 +190,41 @@ def cache_vehicle_resources(
     except Exception as error:
         for archive in created_files:
             archive.unlink(missing_ok=True)
-        if isinstance(error, AitoResourceError):
+        if isinstance(error, VehicleResourceError):
             raise
-        raise AitoResourceError("vehicle resource download failed") from error
+        raise VehicleResourceError("vehicle resource download failed") from error
     return cached
+
+
+def resource_cache_needs_recovery(
+    storage_root: str | Path,
+    asset_key: str,
+    manifests: Mapping[str, Mapping[str, Any]],
+    resources: Any,
+) -> bool:
+    """Return whether a saved manifest lacks its matching cached archive."""
+    if not isinstance(resources, Mapping):
+        return True
+    account_dir = Path(storage_root) / _safe_path_part(asset_key)
+    for vehicle_id, manifest in manifests.items():
+        resource = resources.get(vehicle_id)
+        cache = resource.get("cache") if isinstance(resource, Mapping) else None
+        expected_sign = _optional_value(manifest.get("resourceSign"))
+        archive_rel = cache.get("archive") if isinstance(cache, Mapping) else None
+        if (
+            not isinstance(archive_rel, str)
+            or cache.get("resourceSign") != expected_sign
+            or not (account_dir / archive_rel).is_file()
+        ):
+            return True
+    return False
 
 
 def remove_vehicle_resources(storage_root: str | Path, asset_key: str) -> None:
     root = Path(storage_root).resolve()
     account_dir = (root / _safe_path_part(asset_key)).resolve()
     if account_dir.parent != root:
-        raise AitoResourceError("invalid resource storage path")
+        raise VehicleResourceError("invalid resource storage path")
     shutil.rmtree(account_dir, ignore_errors=True)
 
 
@@ -209,9 +233,9 @@ def _download_https_resource(url: str, destination: Path) -> None:
     with urlopen(request, timeout=120) as response:
         final_url = response.geturl()
         if urlparse(final_url).scheme.lower() != "https":
-            raise AitoResourceError("resource redirect did not use HTTPS")
+            raise VehicleResourceError("resource redirect did not use HTTPS")
         if response.status != 200:
-            raise AitoResourceError("resource download returned an unexpected status")
+            raise VehicleResourceError("resource download returned an unexpected status")
         with destination.open("wb") as output:
             shutil.copyfileobj(response, output, length=1024 * 1024)
 
@@ -231,14 +255,14 @@ def _remove_stale_archives(account_dir: Path, cached: Mapping[str, Mapping[str, 
 def _required_https_url(value: Any) -> str:
     url = _required_value(value, "resource URL")
     if urlparse(url).scheme.lower() != "https":
-        raise AitoResourceError("resource URL must use HTTPS")
+        raise VehicleResourceError("resource URL must use HTTPS")
     return url
 
 
 def _required_value(value: Any, name: str) -> str:
     normalized = _optional_value(value)
     if not normalized:
-        raise AitoResourceError(f"missing {name}")
+        raise VehicleResourceError(f"missing {name}")
     return normalized
 
 

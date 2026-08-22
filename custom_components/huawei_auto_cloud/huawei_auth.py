@@ -15,8 +15,8 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding
 
 from .auth import P256KeyPair, b64url
-from .api import _urllib_transport
-from .const import AITO_CLIENT_ID, DEFAULT_DEVICE_MODEL, DEFAULT_NATIVE_DEVICE_MODEL, DEFAULT_PACKAGE_NAME
+from .omp.client import _urllib_transport
+from .const import HUAWEI_AUTO_CLIENT_ID, DEFAULT_DEVICE_MODEL, DEFAULT_NATIVE_DEVICE_MODEL, DEFAULT_PACKAGE_NAME
 
 Transport = Callable[[str, str, dict[str, str], bytes | None, float], tuple[int, dict[str, str], bytes]]
 
@@ -242,7 +242,7 @@ class HuaweiIosAuthClient:
         ).encode("utf-8")
         query = urlencode(
             {
-                "client_id": AITO_CLIENT_ID,
+                "client_id": HUAWEI_AUTO_CLIENT_ID,
                 "Version": DEFAULT_HUAWEI_IOS_VERSION,
                 "cVersion": DEFAULT_HUAWEI_IOS_CVERSION,
                 "srcAppName": DEFAULT_PACKAGE_NAME,
@@ -379,7 +379,7 @@ def _x_asym_authorization(
     now = int(time.time())
     jwt_header = {"kid": key_pair.key_id, "typ": "JWT_PRO", "alg": "ES256"}
     jwt_payload = {
-        "iss": AITO_CLIENT_ID,
+        "iss": HUAWEI_AUTO_CLIENT_ID,
         "iat": now,
         "exp": now + 3600,
         "requestSignature": request_signature,
