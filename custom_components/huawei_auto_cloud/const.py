@@ -21,7 +21,6 @@ UNROUTABLE_OMP_SESSION_ID = "unroutable"
 UNROUTABLE_VEHICLE_ID = "unroutable"
 
 OMP_BASE_ORIGIN = "https://omp.uopes.cn"
-SERES_APIG_ORIGIN = "https://apig.fgaiservice.com"
 
 DEFAULT_DEVICE_MODEL = "iPhone"
 DEFAULT_NATIVE_DEVICE_MODEL = "iPhone8,1"
