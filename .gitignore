@@ -7,3 +7,4 @@ loginCallback*.txt
 tests/
 __pycache__/
 .pytest_cache/
+docs/

@@ -4,7 +4,7 @@
 
 <p>
   <strong>
-    本项目不是 AITO、问界、赛力斯、华为或鸿蒙智行官方项目，也未获得上述品牌、厂商或平台的授权、认可或支持。
+    本项目不是 问界、享界、智界、尚界、尊界、华为、AITO、华为乾坤或鸿蒙智行官方项目，也未获得上述品牌、厂商或平台的授权、认可或支持。
     本项目仅用于个人 Home Assistant 集成开发、技术验证和学习研究。车辆属于高风险联网设备，相关数据可能涉及车辆安全、隐私数据、云端服务规则以及辅助驾驶相关场景。
     任何使用、传播、修改或部署行为均由使用者自行判断并承担全部责任。
   </strong>
@@ -27,10 +27,10 @@
 ---
 
 <p align="center">
-  <img src="custom_components/aito/brand/icon.png" alt="AITO" width="120" />
+  <img src="custom_components/huawei_auto_cloud/brand/icon.png" alt="Huawei Auto Cloud" width="160" />
 </p>
 
-<h1 align="center">AITO Home Assistant</h1>
+<h1 align="center">Huawei Auto Cloud</h1>
 
 <p align="center">
   <img src="https://img.shields.io/badge/Home%20Assistant-Custom%20Integration-41BDF5" alt="Home Assistant Custom Integration" />
@@ -46,20 +46,26 @@
 
 华为账号登录与会话维护实现参考并使用了 [Lynnette177/AITO-API](https://github.com/Lynnette177/AITO-API) 的实现与研究成果。上游项目的版权归原作者所有；本仓库不主张上游项目代码或研究资料的版权。
 
-## 当前支持车型
+## 支持车型
 
-- 问界 M8（`SERES-F3`）
-- 问界 M6（`AITO-A15`，当前无控制能力）
-- 问界 M5（`SERES-X1`）
+下表的车型分类以[鸿蒙智行官网](https://hima.auto/)各品牌页面为准；“接入状态”仅表示本集成当前经验证的实际能力，不代表对同品牌全部车型或年款的支持承诺。
+
+| 品牌 | 官网当前车型/系列 | 本集成当前接入状态 |
+| --- | --- | --- |
+| 问界 | M5、M6、M7、M8、M9 | **已接入**：M5（`SERES-X1`）、M6（`AITO-A15`）、M8（`SERES-F3`） |
+| 享界 | S9、S9T、G9 | 未接入 |
+| 智界 | S7、R7、V9 | 未接入 |
+| 尚界 | H5、Z7、Z7T | 未接入 |
+| 尊界 | S800、V800、V680 | 未接入 |
 
 ## 快速上手
 
 ### 1. 安装
 
-将 `custom_components/aito` 复制到 Home Assistant 配置目录：
+将 `custom_components/huawei_auto_cloud` 复制到 Home Assistant 配置目录：
 
 ```text
-/config/custom_components/aito
+/config/custom_components/huawei_auto_cloud
 ```
 
 复制完成后，重启 Home Assistant。
@@ -69,14 +75,14 @@
 在 Home Assistant 中进入：
 
 ```text
-设置 -> 设备与服务 -> 添加集成 -> AITO
+设置 -> 设备与服务 -> 添加集成 -> Huawei Auto Cloud
 ```
 
-如果列表中没有看到 `AITO`，请确认：
+如果列表中没有看到 `Huawei Auto Cloud`，请确认：
 
-- 目录路径是 `/config/custom_components/aito`
+- 目录路径是 `/config/custom_components/huawei_auto_cloud`
 - Home Assistant 已经重启
-- `manifest.json` 位于 `aito` 目录中
+- `manifest.json` 位于 `huawei_auto_cloud` 目录中
 
 ### 3. 完成登录
 
@@ -94,61 +100,23 @@
 
 如果登录失败，请优先检查手机号、密码、短信验证码和账号风控状态。不要公开 Home Assistant 日志、诊断文件或 `.storage` 内的任何文件。
 
+为便于本地排查，集成会在 `huawei_auto_cloud/accounts/<手机号>.json` 直接保存账户资产，其中包含原始 OMP 用户认证、企业授权、车辆列表、车辆档案和首次车辆状态响应。设备页面的“原始车辆状态”诊断实体会暴露对应车辆的状态快照；该文件和实体可能包含 token、车辆和账号敏感信息，仅应在本地受控环境中查看，禁止上传或分享。
+
 ### 5. 查看实体
 
-配置成功后，进入 AITO 设备页面查看自动生成的实体。
+配置成功后，进入 Huawei Auto Cloud 设备页面查看自动生成的实体。
 
 实体数量和字段取决于车辆、账号权限以及云端实际返回的数据。README 不承诺固定实体列表，请以 Home Assistant 实际显示为准。
 
-### 6. 调整轮询间隔
+### 6. 轮询间隔与策略
 
-默认轮询间隔为 `30` 秒。
+默认轮询间隔为 `30` 秒，可在集成选项中调整。过低的轮询频率可能增加云端服务压力，也可能导致请求失败或账号异常。
 
-可在集成选项中调整轮询间隔。过低的轮询频率可能增加云端服务压力，也可能导致请求失败或账号异常。
+调度器会按车辆在线状态选择请求内容：未知或离线车辆只请求 `vehicleStatus.connectStatus`；已确认在线的车辆才请求完整的已验证状态字段。车辆由离线转为在线时，集成会立即补取一次完整状态，无需等待下一个轮询周期。
 
-## Lovelace 卡片（可选）
+离线时会保留最后一帧有效数据，不会用云端占位值覆盖。能耗报告仅在车辆在线时请求，且每辆车最多每小时一次。控制命令不会用读取请求主动唤醒车辆；控制完成后的刷新仍遵循上述在线状态策略。
 
-仓库的 `cards/aito-card.js` 是一个配套的自定义卡片，集中展示电量、油/电续航、综合续航、车内与空调温度、四轮胎压、驻车状态，并提供「立即备车」和「哨兵模式」两个开关。卡片标题取车型名（`sensor.aito_model`）。
-
-### 1. 安装卡片文件
-
-将 `cards/aito-card.js` 复制到 Home Assistant 配置目录的 `www` 下：
-
-```text
-/config/www/aito-card.js
-```
-
-### 2. 注册为前端资源
-
-在 Home Assistant 中进入：
-
-```text
-设置 -> 仪表板 -> 右上角三点 -> 资源 -> 添加资源
-```
-
-- URL：`/local/aito-card.js`
-- 资源类型：`JavaScript 模块`
-
-（或在 YAML 模式下，于 `lovelace.resources` 中添加同样的 `module` 条目。）
-
-### 3. 添加卡片
-
-编辑仪表板，添加一个「手动卡片」，填入：
-
-```yaml
-type: custom:aito-card
-```
-
-### 车辆图片
-
-集成在初始化时会从车辆资源包中合成一张该车型的整车图片，写入 `www/aito/car.png`，卡片自动引用（`/local/aito/car.png`），无需手动准备图片。若该图暂不可用，卡片会自动隐藏图片区域。
-
-> 卡片脚本顶部的 `CAR_IMAGE_URL` 带一个版本参数（`?v=2`）用于让浏览器在图片更新后重新加载；如自行替换车辆图片，可自行调整该值。
-
-### 说明
-
-- 卡片读取集成生成的实体（`sensor.aito_*`、`switch.aito_*`）。实体的具体 ID 以你的 Home Assistant 为准；若与卡片默认引用不一致，可重命名实体，或修改卡片脚本顶部的常量。
-- 卡片仅依赖 Home Assistant 内置能力，无需额外前端依赖。
+车辆软件版本仅在车辆在线时检查，每辆车最多每天一次；检测到 OTA 更新后会更新设备信息。这不是 30 秒状态轮询的一部分。
 
 ## 数据与隐私
 

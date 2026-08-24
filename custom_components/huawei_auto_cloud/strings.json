@@ -1,0 +1,166 @@
+{
+    "config": {
+        "step": {
+            "user": {
+                "title": "Huawei Auto Cloud login",
+                "description": "Use a Huawei account with vehicle-service access. First setup requires an SMS verification code. The integration stores the required account session and stable device identity locally. A dedicated Home Assistant account is recommended because signing in to another client may require this integration to authenticate again.",
+                "data": {
+                    "phone": "Huawei account phone number",
+                    "password": "Huawei account password"
+                }
+            },
+            "sms": {
+                "title": "SMS verification",
+                "description": "Enter the SMS verification code sent to this Huawei account phone number.",
+                "data": {
+                    "sms_code": "SMS verification code"
+                }
+            }
+        },
+    "error": {
+            "cannot_connect": "Cannot connect to the Huawei vehicle service. Please try again later.",
+            "invalid_auth": "Huawei account authentication failed. Check the phone number, password, and SMS verification code.",
+      "no_vehicles": "Login succeeded, but no supported vehicles were returned for this account."
+    },
+    "abort": {
+      "reauth_successful": "Huawei Auto Cloud authentication was updated successfully.",
+      "reauth_failed": "The saved Huawei Auto Cloud account identity is unavailable. Remove and add the integration again."
+    }
+    },
+    "options": {
+        "step": {
+            "init": {
+                "title": "Huawei Auto Cloud options",
+                "data": {
+                    "scan_interval": "Polling interval (seconds)"
+                }
+            }
+        }
+    },
+    "entity": {
+    "sensor": {
+      "raw_vehicle_status": {"name": "Raw vehicle status"},
+      "model": {
+                "name": "Model"
+            },
+            "battery_soc": {
+                "name": "Battery"
+            },
+            "charge_voltage": {
+                "name": "Charging voltage"
+            },
+            "charge_current": {
+                "name": "Charging current"
+            },
+            "charge_power": {
+                "name": "Charging power"
+            },
+            "remaining_charge_time": {
+                "name": "Remaining charge time"
+            },
+            "electric_wltc_remaining_mileage": {
+                "name": "Electric WLTC range"
+            },
+            "wltc_remaining_mileage": {
+                "name": "Total WLTC range"
+            },
+            "total_mileage": {
+                "name": "Total mileage"
+            },
+            "fuel_wltc_remaining_mileage": {
+                "name": "Fuel WLTC range"
+            },
+            "fuel_remaining": {
+                "name": "Fuel remaining"
+            },
+            "average_power_consumption": {
+                "name": "Average energy consumption"
+            },
+            "average_fuel_consumption": {
+                "name": "Average fuel consumption"
+            },
+            "sum_remaining_mileage": {
+                "name": "Combined range"
+            },
+            "last_updated_at": {
+                "name": "Vehicle data timestamp"
+            },
+            "last_online_at": {
+                "name": "Vehicle last online"
+            },
+            "charge_status": {
+                "name": "Charging status",
+                "state": {
+                    "not_charging": "Not charging",
+                    "connected_not_charging": "Connected, not charging",
+                    "charging": "Charging",
+                    "complete": "Charging complete",
+                    "fault": "Charging fault",
+                    "paused": "Charging paused",
+                    "stopped": "Charging stopped",
+                    "preheating": "Battery preheating",
+                    "scheduled": "Scheduled charging",
+                    "unknown": "Unknown"
+                }
+            },
+            "vehicle_move_status": {
+                "name": "Vehicle move status",
+                "state": {
+                    "0": "Parked",
+                    "1": "Driving",
+                    "2": "Preparing"
+                }
+            },
+            "inside_temperature": {
+                "name": "Cabin temperature"
+            },
+            "air_conditioner_target_temperature": {
+                "name": "A/C target temperature"
+            },
+            "tire_pressure_left_front": {
+                "name": "Left front tire pressure"
+            },
+            "tire_pressure_right_front": {
+                "name": "Right front tire pressure"
+            },
+            "tire_pressure_left_back": {
+                "name": "Left rear tire pressure"
+            },
+            "tire_pressure_right_back": {
+                "name": "Right rear tire pressure"
+            }
+        },
+        "switch": {
+            "now_departure_plan": {
+                "name": "Immediate departure preparation"
+            },
+            "sentry_mode": {
+                "name": "Sentry mode"
+            }
+        },
+        "climate": {
+            "air_conditioner": {
+                "name": "Air conditioner",
+                "state_attributes": {
+                    "preset_mode": {
+                        "state": {
+                            "rapid_cool": "Rapid cool",
+                            "rapid_heat": "Rapid heat",
+                            "defrost": "Defrost"
+                        }
+                    }
+                }
+            }
+        },
+    "device_tracker": {
+      "location": {
+        "name": "Location"
+      }
+    },
+    "binary_sensor": {
+      "vehicle_online": {
+        "name": "Vehicle online"
+      }
+    }
+  }
+}

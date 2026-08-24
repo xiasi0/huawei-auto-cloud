@@ -125,19 +125,6 @@ def session_key_status(response: Any) -> str | None:
     return None
 
 
-def needs_user_session_refresh(response: Any) -> bool:
-    if not isinstance(response, dict):
-        return False
-    return (
-        str(response.get("code")) in {"401", "100011"}
-        or str(response.get("resultCode")) in {"1000019", "3001002"}
-        or any(
-            response.get(key) in {"xid is expired", "not login", "not logged in"}
-            for key in ("msg", "message", "error", "error_description")
-        )
-    )
-
-
 def _prefer_session_key(credentials: dict[str, Any], response: Any) -> dict[str, Any]:
     session_key = _find_session_key(response)
     if not session_key:
@@ -162,13 +149,42 @@ def _find_session_key(value: Any) -> str | None:
     return None
 
 
-def extract_vehicle_authorization(response: Any, enterprise_code: str = "SERES") -> str | None:
+def extract_enterprise_authorizations(response: Any) -> dict[str, str]:
+    """Return only explicit enterprise/token pairs from an auth response.
+
+    There is intentionally no first-token fallback: an unlabelled token cannot
+    be routed safely in a multi-enterprise account.
+    """
+    result: dict[str, str] = {}
     for token in _find_vehicle_tokens(response):
         if not isinstance(token, dict):
             continue
-        if token.get("enterpriseCode") == enterprise_code and token.get("accessToken"):
-            return str(token["accessToken"])
-    return None
+        enterprise = token.get("enterpriseCode")
+        authorization = token.get("accessToken")
+        if isinstance(enterprise, str) and enterprise and isinstance(authorization, str) and authorization:
+            result[enterprise] = authorization
+    return result
+
+
+def extract_refreshed_enterprise_authorization(response: Any, enterprise_code: str) -> str | None:
+    """Extract a refresh result for the enterprise explicitly sent in the request.
+
+    A vehicle-refresh response may be either a normal labelled token record or
+    a flat ``{"accessToken": ...}`` response. The latter is safe to accept
+    only here: the caller sent one explicit enterprise code in its request and
+    rejects a conflicting response enterprise code. It is not a token fallback
+    and is never used to discover a new enterprise.
+    """
+    authorization = extract_enterprise_authorizations(response).get(enterprise_code)
+    if authorization:
+        return authorization
+    if not isinstance(response, dict):
+        return None
+    response_enterprise = response.get("enterpriseCode")
+    access_token = response.get("accessToken")
+    if response_enterprise not in {None, "", enterprise_code}:
+        return None
+    return str(access_token) if isinstance(access_token, str) and access_token else None
 
 
 def _find_vehicle_tokens(value: Any) -> list[Any]:
@@ -176,6 +192,8 @@ def _find_vehicle_tokens(value: Any) -> list[Any]:
         token_list = value.get("vehicleTokenInfoList")
         if isinstance(token_list, list):
             return token_list
+        if value.get("enterpriseCode") is not None and value.get("accessToken") is not None:
+            return [value]
         for nested in value.values():
             found = _find_vehicle_tokens(nested)
             if found:
