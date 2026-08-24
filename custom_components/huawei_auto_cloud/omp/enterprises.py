@@ -200,7 +200,7 @@ CHERY_OMP = OmpManufacturerEndpoint(
     enterprise_code="CHERY",
     gateway_origin="https://apir.chssatsp.icvcs.com",
     contracts=_normal_gateway_contracts("chery.apir"),
-    allowed_spec_ids=frozenset(),
+    allowed_spec_ids=frozenset({"luxeed_r7"}),
     profile_source=VehicleProfileSource.GATEWAY_VEHICLE_INFO,
 )
 
