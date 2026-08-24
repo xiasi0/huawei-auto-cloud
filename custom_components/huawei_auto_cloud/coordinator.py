@@ -15,9 +15,9 @@ from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 
-from .const import FIRMWARE_REFRESH_SECONDS, FIRMWARE_RETRY_SECONDS, DOMAIN, scan_interval_seconds
+from .const import DISCOVERED_VEHICLE_SPEC_ID, FIRMWARE_REFRESH_SECONDS, FIRMWARE_RETRY_SECONDS, DOMAIN, UNROUTABLE_OMP_ENDPOINT_ID, UNROUTABLE_OMP_SESSION_ID, scan_interval_seconds
 from .models import AccountSession, EnterpriseSession, Vehicle, VehicleRoute
-from .omp.auth import OmpAuthorizationError, create_enterprise_sessions, refresh_account_session, refresh_enterprise_session
+from .omp.auth import OmpAuthorizationError, create_enterprise_sessions, refresh_account_session, refresh_enterprise_session, refresh_enterprise_sessions
 from .omp.client import OmpApiError, OmpClient, OmpCommandError
 from .omp.contracts import OmpOperation
 from .polling import connection_state, sections_for_route
@@ -115,8 +115,10 @@ class HuaweiAutoCloudCoordinator(DataUpdateCoordinator[dict[str, dict[str, Any]]
     def is_route_controllable(self, route_id: str) -> bool:
         """A route with a vanished enterprise scope must never send a command."""
         route = self.routes.get(route_id)
-        return (
-            route is not None
+        return bool(
+            route
+            and route.endpoint_id != UNROUTABLE_OMP_ENDPOINT_ID
+            and route.spec_id != DISCOVERED_VEHICLE_SPEC_ID
             and route_id not in self._uncontrollable_routes
             and route.session_id in self.sessions
         )
@@ -173,6 +175,10 @@ class HuaweiAutoCloudCoordinator(DataUpdateCoordinator[dict[str, dict[str, Any]]
 
     async def _async_refresh_firmware_version(self, route_id: str) -> None:
         """Refresh static firmware metadata at most once per online vehicle per day."""
+        from .omp.enterprises import endpoint_for_id
+
+        if not endpoint_for_id(self.routes[route_id].endpoint_id).supports(OmpOperation.FIRMWARE):
+            return
         now = time.time()
         if now < self._firmware_refresh_at.get(route_id, 0):
             return
@@ -341,9 +347,15 @@ class HuaweiAutoCloudCoordinator(DataUpdateCoordinator[dict[str, dict[str, Any]]
                 raise
             try:
                 discovered = create_enterprise_sessions(refreshed_account, response)
-            except OmpAuthorizationError as error:
-                raise ConfigEntryAuthFailed("Huawei Auto Cloud account authentication expired") from error
-            by_endpoint = {session.endpoint_id: session for session in discovered.values()}
+            except OmpAuthorizationError:
+                discovered = {}
+            refreshed_scopes, _ = await self.hass.async_add_executor_job(
+                refresh_enterprise_sessions,
+                self.client,
+                refreshed_account,
+                discovered,
+            )
+            by_endpoint = {session.endpoint_id: session for session in refreshed_scopes.values()}
             replacement: dict[str, EnterpriseSession] = {}
             for session_id, old_session in self.sessions.items():
                 new_session = by_endpoint.get(old_session.endpoint_id)
@@ -352,8 +364,7 @@ class HuaweiAutoCloudCoordinator(DataUpdateCoordinator[dict[str, dict[str, Any]]
                         route_id for route_id, route in self.routes.items() if route.session_id == session_id
                     )
                     continue
-                refreshed_scope = await self.hass.async_add_executor_job(refresh_enterprise_session, self.client, refreshed_account, new_session)
-                replacement[session_id] = replace(refreshed_scope, session_id=session_id, generation=old_session.generation + 1)
+                replacement[session_id] = replace(new_session, session_id=session_id, generation=old_session.generation + 1)
             self.account = refreshed_account
             self.sessions = replacement
 
@@ -406,7 +417,12 @@ def _load_payload(payload: Mapping[str, Any]) -> tuple[AccountSession, dict[str,
         for route_id, value in vehicles_raw.items()
         if isinstance(value, Mapping) and isinstance(value.get("normalized"), Mapping)
     }
-    if not sessions or not routes or set(routes) != set(vehicles):
+    unroutable_routes = {
+        route_id
+        for route_id, route in routes.items()
+        if route.endpoint_id == UNROUTABLE_OMP_ENDPOINT_ID and route.session_id == UNROUTABLE_OMP_SESSION_ID
+    }
+    if not routes or set(routes) != set(vehicles) or (not sessions and not unroutable_routes):
         raise ValueError("account asset has inconsistent routes")
     return account, sessions, routes, vehicles
 

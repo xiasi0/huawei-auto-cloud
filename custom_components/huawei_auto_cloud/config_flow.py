@@ -13,14 +13,15 @@ from homeassistant import config_entries
 from homeassistant.core import callback
 
 from .auth import P256KeyPair, extract_credentials, session_key_status
-from .const import CONF_ASSET_KEY, CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL_SECONDS, DOMAIN, FIRMWARE_REFRESH_SECONDS, MIN_SCAN_INTERVAL_SECONDS, scan_interval_seconds
+from .const import CONF_ASSET_KEY, CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL_SECONDS, DISCOVERED_VEHICLE_SPEC_ID, DOMAIN, FIRMWARE_REFRESH_SECONDS, MIN_SCAN_INTERVAL_SECONDS, UNROUTABLE_ENTERPRISE_CODE, UNROUTABLE_OMP_ENDPOINT_ID, UNROUTABLE_OMP_SESSION_ID, UNROUTABLE_VEHICLE_ID, scan_interval_seconds
 from .huawei_auth import HuaweiAuthError, HuaweiIosAuthClient
-from .models import AccountSession, Vehicle, VehicleRoute, firmware_sw_version, vehicle_resource_manifest
-from .omp.auth import create_enterprise_sessions, refresh_enterprise_session
+from .models import AccountSession, Vehicle, VehicleProfile, VehicleRoute, firmware_sw_version, vehicle_resource_manifest
+from .omp.auth import OmpAuthorizationError, create_enterprise_sessions, has_unroutable_vehicle_authorization, refresh_enterprise_sessions
 from .omp.client import OmpApiError, OmpClient, safe_response_shape
 from .omp.contracts import OmpOperation
+from .omp.discovery import fetch_profiles
 from .omp.enterprises import endpoint_for_id
-from .routing import RouteRegistry
+from .routing import RouteRegistry, RouteUnavailable
 from .specs import vehicle_spec_for
 from .storage import IdentityStore, PhoneAssetStore, encrypt_password
 
@@ -215,28 +216,51 @@ class HuaweiAutoCloudConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             session_context="",
         )
         vehicle_auth = client.vehicle_auth(xid=account.xid, device_id=account.omp_device_id, user_id=account.omp_user_id, native_device_model=account.native_device_model)
-        sessions = create_enterprise_sessions(account, vehicle_auth)
-        sessions = {session_id: refresh_enterprise_session(client, account, session) for session_id, session in sessions.items()}
+        has_unroutable_authorization = has_unroutable_vehicle_authorization(vehicle_auth)
+        try:
+            sessions = create_enterprise_sessions(account, vehicle_auth)
+        except OmpAuthorizationError:
+            if not has_unroutable_authorization:
+                raise
+            sessions = {}
+        initial_sessions = sessions
+        sessions, refresh_failures = refresh_enterprise_sessions(client, account, initial_sessions)
+        for session_id, error_name in refresh_failures.items():
+            _LOGGER.warning(
+                "Huawei Auto Cloud enterprise scope refresh failed: endpoint=%s error=%s",
+                initial_sessions[session_id].endpoint_id,
+                error_name,
+            )
         registry = RouteRegistry(account, {}, sessions)
         discovered: list[tuple[str, Vehicle, dict[str, str | None] | None]] = []
         raw_vehicle_lists: dict[str, Any] = {}
         raw_vehicle_profiles: dict[str, Any] = {}
         for session_id, session in sessions.items():
-            context = registry.discovery_context(session_id, OmpOperation.VEHICLE_LIST)
-            response = client.request(context)
+            try:
+                context = registry.discovery_context(session_id, OmpOperation.VEHICLE_LIST)
+                response = client.request(context)
+                vehicle_items = response if isinstance(response, list) else response.get("data", []) if isinstance(response, dict) else []
+                profile_result = fetch_profiles(
+                    endpoint_for_id(session.endpoint_id),
+                    client,
+                    account,
+                    session,
+                    vehicle_items,
+                )
+            except (OmpApiError, OmpAuthorizationError, RouteUnavailable, ValueError) as error:
+                _LOGGER.warning(
+                    "Huawei Auto Cloud enterprise discovery failed: endpoint=%s error=%s",
+                    session.endpoint_id,
+                    type(error).__name__,
+                )
+                continue
             raw_vehicle_lists[session_id] = response
-            vehicle_items = response if isinstance(response, list) else response.get("data", []) if isinstance(response, dict) else []
-            profiles, raw_profile_response = endpoint_for_id(session.endpoint_id).fetch_profiles(
-                client,
-                account,
-                session,
-            )
-            raw_vehicle_profiles[session_id] = raw_profile_response
+            raw_vehicle_profiles[session_id] = profile_result.raw_response
             for item in vehicle_items:
                 if not isinstance(item, dict):
                     continue
                 vehicle_id = str(item.get("vehicleIdStr") or item.get("vehicleId") or "")
-                if profile := profiles.get(vehicle_id):
+                if profile := profile_result.profiles.get(vehicle_id):
                     item = {**item, "profile": profile}
                 vehicle = Vehicle.from_api(item)
                 if vehicle.id:
@@ -249,16 +273,36 @@ class HuaweiAutoCloudConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         for session_id, vehicle, resource_manifest in discovered:
             spec = vehicle_spec_for(vehicle)
             session = sessions[session_id]
-            if spec is None:
-                continue
-            route_id = existing_route_ids.get((vehicle.id, session.endpoint_id, session.enterprise_code, spec.key), str(uuid.uuid4()))
-            route = VehicleRoute(route_id, vehicle.id, session.endpoint_id, session_id, session.enterprise_code, spec.key)
+            spec_id = spec.key if spec is not None else DISCOVERED_VEHICLE_SPEC_ID
+            route_id = existing_route_ids.get((vehicle.id, session.endpoint_id, session.enterprise_code, spec_id), str(uuid.uuid4()))
+            route = VehicleRoute(route_id, vehicle.id, session.endpoint_id, session_id, session.enterprise_code, spec_id)
             routes[route.route_id] = route
             runtime_vehicles[route.route_id] = vehicle
-            if resource_manifest:
+            if spec is not None and resource_manifest:
                 resource_manifests[vehicle.id] = resource_manifest
+        if has_unroutable_authorization:
+            route_id = existing_route_ids.get(
+                (UNROUTABLE_VEHICLE_ID, UNROUTABLE_OMP_ENDPOINT_ID, UNROUTABLE_ENTERPRISE_CODE, DISCOVERED_VEHICLE_SPEC_ID),
+                str(uuid.uuid4()),
+            )
+            route = VehicleRoute(
+                route_id,
+                UNROUTABLE_VEHICLE_ID,
+                UNROUTABLE_OMP_ENDPOINT_ID,
+                UNROUTABLE_OMP_SESSION_ID,
+                UNROUTABLE_ENTERPRISE_CODE,
+                DISCOVERED_VEHICLE_SPEC_ID,
+            )
+            routes[route.route_id] = route
+            runtime_vehicles[route.route_id] = Vehicle(
+                id=UNROUTABLE_VEHICLE_ID,
+                name="未识别车辆网关",
+                profile=VehicleProfile(enterprise_code=UNROUTABLE_ENTERPRISE_CODE),
+            )
         if not routes:
-            raise ValueError("no supported vehicles were found")
+            raise ValueError("no vehicles were found")
+        routed_session_ids = {route.session_id for route in routes.values() if route.session_id in sessions}
+        sessions = {session_id: session for session_id, session in sessions.items() if session_id in routed_session_ids}
         account = AccountSession(**{**asdict(account), "session_context": ""})
         route_registry = RouteRegistry(account, routes, sessions)
         firmware_responses = _attach_firmware_versions(client, route_registry, routes, runtime_vehicles)
@@ -333,6 +377,11 @@ def _attach_firmware_versions(
     """Fetch each published vehicle's static software version once at login."""
     responses: dict[str, Any] = {}
     for route_id in routes:
+        if routes[route_id].spec_id == DISCOVERED_VEHICLE_SPEC_ID:
+            continue
+        endpoint = endpoint_for_id(routes[route_id].endpoint_id)
+        if not endpoint.supports(OmpOperation.FIRMWARE):
+            continue
         try:
             response = client.request(registry.request_context(route_id, OmpOperation.FIRMWARE))
         except Exception:
