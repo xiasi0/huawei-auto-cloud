@@ -9,7 +9,6 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Mapping
 
-from ..const import SERES_APIG_ORIGIN
 from .contracts import CredentialPurpose, OmpOperation, OmpRequestContract
 
 class VehicleProfileSource(StrEnum):
@@ -56,7 +55,7 @@ _VEHICLE_APIG_HEADERS = _APIG_HEADERS | {"X-Vehicle-Id"}
 SERES_OMP = OmpManufacturerEndpoint(
     endpoint_id="seres_omp",
     enterprise_code="SERES",
-    gateway_origin=SERES_APIG_ORIGIN,
+    gateway_origin="https://apig.fgaiservice.com",
     contracts={
         OmpOperation.VEHICLE_LIST: OmpRequestContract(
             contract_id="seres.apig.vehicles.v1",
