@@ -334,6 +334,25 @@ SPECS: tuple[VehicleSpec, ...] = (
         supports_location=True,
     ),
     VehicleSpec(
+        key="seres_x1ev_24_c",
+        enterprise_code="SERES",
+        project_code="SERES-X1EV-24-C",
+        sensors=tuple(
+            sensor
+            for sensor in SERES_COMMON_SENSORS
+            if sensor.key not in {
+                "fuel_wltc_remaining_mileage",
+                "fuel_remaining",
+                "average_fuel_consumption",
+            }
+        ),
+        controls=frozenset({
+            VehicleControl.AIR_CONDITIONER,
+            VehicleControl.SENTRY_MODE,
+        }),
+        supports_location=True,
+    ),
+    VehicleSpec(
         key="luxeed_r7",
         enterprise_code="CHERY",
         project_code="EHY-REEV-2025MY",
