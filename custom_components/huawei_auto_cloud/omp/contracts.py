@@ -14,6 +14,7 @@ class OmpOperation(StrEnum):
     """Reviewed operations that a manufacturer endpoint may expose."""
 
     VEHICLE_LIST = "vehicle_list"
+    VEHICLE_PROFILE = "vehicle_profile"
     DYNAMIC_INFOS = "dynamic_infos"
     ENERGY_REPORT = "energy_report"
     LOCATION = "location"

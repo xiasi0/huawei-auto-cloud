@@ -15,6 +15,7 @@ async def async_setup_entry(hass, entry, async_add_entities) -> None:
     async_add_entities(
         VehicleOnlineSensor(coordinator, route_id, coordinator.vehicles[route_id], route)
         for route_id, route in coordinator.routes.items()
+        if coordinator.vehicle_specs.get(route_id) is not None
     )
 
 

@@ -10,14 +10,32 @@ from ..auth import (
     extract_credentials,
     extract_enterprise_authorizations,
     extract_refreshed_enterprise_authorization,
+    _find_vehicle_tokens,
 )
 from ..models import AccountSession, EnterpriseSession
-from .client import OmpClient
+from .client import OmpApiError, OmpClient
 from .enterprises import ENDPOINTS
 
 
 class OmpAuthorizationError(RuntimeError):
     pass
+
+
+def has_unroutable_vehicle_authorization(response: object) -> bool:
+    """Whether OMP returned a vehicle token with no registered gateway."""
+    registered_codes = {endpoint.enterprise_code for endpoint in ENDPOINTS.values()}
+    for token in _find_vehicle_tokens(response):
+        if not isinstance(token, Mapping):
+            continue
+        authorization = token.get("accessToken")
+        enterprise_code = token.get("enterpriseCode")
+        if isinstance(authorization, str) and authorization and (
+            not isinstance(enterprise_code, str)
+            or not enterprise_code
+            or enterprise_code not in registered_codes
+        ):
+            return True
+    return False
 
 
 def create_enterprise_sessions(account: AccountSession, response: object) -> dict[str, EnterpriseSession]:
@@ -60,6 +78,22 @@ def refresh_enterprise_session(client: OmpClient, account: AccountSession, sessi
     if not authorization:
         raise OmpAuthorizationError("enterprise refresh did not return its authorization")
     return replace(session, authorization=authorization, generation=session.generation + 1)
+
+
+def refresh_enterprise_sessions(
+    client: OmpClient,
+    account: AccountSession,
+    sessions: Mapping[str, EnterpriseSession],
+) -> tuple[dict[str, EnterpriseSession], dict[str, str]]:
+    """Refresh every scope independently and retain every successful result."""
+    refreshed: dict[str, EnterpriseSession] = {}
+    failures: dict[str, str] = {}
+    for session_id, session in sessions.items():
+        try:
+            refreshed[session_id] = refresh_enterprise_session(client, account, session)
+        except (OmpApiError, OmpAuthorizationError) as error:
+            failures[session_id] = type(error).__name__
+    return refreshed, failures
 
 
 def refresh_account_session(client: OmpClient, account: AccountSession) -> AccountSession:
