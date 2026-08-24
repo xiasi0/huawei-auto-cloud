@@ -146,7 +146,7 @@ SERES_OMP = OmpManufacturerEndpoint(
             credential_purpose=CredentialPurpose.VEHICLE_AUTHORIZATION,
         ),
     },
-    allowed_spec_ids=frozenset({"seres_f3", "seres_aito_a15", "seres_x1"}),
+    allowed_spec_ids=frozenset({"seres_f3", "seres_aito_a15", "seres_x1", "seres_x1ev_24_c"}),
     profile_source=VehicleProfileSource.OMP_MANAGEMENT_LIST,
 )
 
