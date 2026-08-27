@@ -6,7 +6,7 @@ import logging
 import os
 import shutil
 from copy import deepcopy
-from typing import TYPE_CHECKING
+from typing import Any, TYPE_CHECKING
 
 try:
     from homeassistant.exceptions import ConfigEntryAuthFailed
@@ -32,13 +32,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     asset_key = entry.data.get(CONF_ASSET_KEY)
     if not isinstance(asset_key, str) or not asset_key:
         raise ValueError("Huawei Auto Cloud entry is missing its phone-named asset key")
-    identity_store = IdentityStore(hass)
-    identity = await identity_store.async_get_or_create(asset_key)
+    await IdentityStore(hass).async_get_or_create(asset_key)
     store = PhoneAssetStore(hass, asset_key)
     revision, payload = await store.async_load()
     if not payload:
         raise ConfigEntryAuthFailed("Huawei Auto Cloud account asset is missing; reauthenticate")
-    coordinator = HuaweiAutoCloudCoordinator(hass, entry, store, revision, payload)
+    try:
+        coordinator = HuaweiAutoCloudCoordinator(hass, entry, store, revision, payload)
+    except (TypeError, ValueError) as error:
+        raise ConfigEntryAuthFailed("Huawei Auto Cloud account asset requires reauthentication") from error
     await coordinator.async_config_entry_first_refresh()
     _register_devices(hass, entry, coordinator)
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = {"coordinator": coordinator}
@@ -86,12 +88,18 @@ async def _async_recover_vehicle_resources(
     coordinator: HuaweiAutoCloudCoordinator,
 ) -> None:
     """Best-effort resource recovery; never block entry setup or login."""
-    omp = payload.get("omp")
+    vehicle_gateway = payload.get("vehicle_gateway")
     vehicles = payload.get("vehicles")
-    if not isinstance(omp, dict) or not isinstance(vehicles, dict):
+    if not isinstance(vehicle_gateway, dict) or not isinstance(vehicles, dict):
         return
-    raw_profiles = omp.get("vehicle_profile_responses")
-    if not isinstance(raw_profiles, dict):
+    raw_profiles = vehicle_gateway.get("vehicle_profile_responses")
+    raw_management_queries = vehicle_gateway.get("vehicle_management_query_responses")
+    raw_discovery_responses: dict[str, Any] = {}
+    if isinstance(raw_profiles, dict):
+        raw_discovery_responses.update({f"profile:{key}": value for key, value in raw_profiles.items()})
+    if isinstance(raw_management_queries, dict):
+        raw_discovery_responses.update({f"management_query:{key}": value for key, value in raw_management_queries.items()})
+    if not raw_discovery_responses:
         return
     vehicle_ids = {
         route.get("vehicle_id")
@@ -100,7 +108,7 @@ async def _async_recover_vehicle_resources(
         for route in (item.get("route"),)
         if isinstance(route, dict) and isinstance(route.get("vehicle_id"), str)
     }
-    manifests = resource_manifests_from_profile_responses(raw_profiles, vehicle_ids)
+    manifests = resource_manifests_from_profile_responses(raw_discovery_responses, vehicle_ids)
     resources = payload.get("resources")
     storage_root = hass.config.path(".storage", DOMAIN, "resources")
     if not manifests or not resource_cache_needs_recovery(storage_root, asset_key, manifests, resources):
@@ -154,8 +162,8 @@ async def _async_extract_car_images(hass: HomeAssistant, asset_key: str, payload
         archive = os.path.join(account_dir, archive_rel)
         destination = os.path.join(web_dir, f"{vehicle_id}.png")
         try:
-            if not os.path.isfile(destination) and await hass.async_add_executor_job(extract_car_image, archive, destination):
-                _LOGGER.info("Huawei Auto Cloud extracted vehicle resource image")
+            if not os.path.isfile(destination):
+                await hass.async_add_executor_job(extract_car_image, archive, destination)
             if index == 0 and os.path.isfile(destination) and not os.path.isfile(default_alias):
                 await hass.async_add_executor_job(shutil.copyfile, destination, default_alias)
         except (VehicleResourceError, OSError):

@@ -1,1 +1,1 @@
-"""Verified OMP/APIG protocol support."""
+"""Verified Huawei OMP authorization support."""

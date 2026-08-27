@@ -15,15 +15,17 @@ from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 
-from .const import DISCOVERED_VEHICLE_SPEC_ID, FIRMWARE_REFRESH_SECONDS, FIRMWARE_RETRY_SECONDS, DOMAIN, UNROUTABLE_OMP_ENDPOINT_ID, UNROUTABLE_OMP_SESSION_ID, scan_interval_seconds
-from .models import AccountSession, EnterpriseSession, Vehicle, VehicleRoute
-from .omp.auth import OmpAuthorizationError, create_enterprise_sessions, refresh_account_session, refresh_enterprise_session, refresh_enterprise_sessions
-from .omp.client import OmpApiError, OmpClient, OmpCommandError
-from .omp.contracts import OmpOperation
+from .const import DISCOVERED_VEHICLE_SPEC_ID, FIRMWARE_REFRESH_SECONDS, FIRMWARE_RETRY_SECONDS, DOMAIN, UNROUTABLE_BINDING_ID, UNROUTABLE_SESSION_ID, scan_interval_seconds
+from .models import AccountSession, Vehicle, VehicleGatewaySession, VehicleRoute
+from .omp.auth import OmpAuthorizationError, create_vehicle_gateway_sessions, refresh_account_session, refresh_vehicle_gateway_session, refresh_vehicle_gateway_sessions, vehicle_authorization_bindings
+from .omp.client import OmpApiError, OmpClient
+from .omp.contracts import VehicleOperation
+from .omp.enterprises import binding_for_id
 from .polling import connection_state, sections_for_route
 from .routing import RouteRegistry, RouteUnavailable
-from .specs import VehicleControl, VehicleSpec, dynamic_sections, has_energy_report_sensors, vehicle_spec_for
+from .specs import VehicleControl, VehicleSpec, has_energy_report_sensors, vehicle_spec_for
 from .storage import PhoneAssetStore, canonical_asset_payload
+from .vehicle_gateway import VehicleCommandError, VehicleGatewayApiError, VehicleGatewayClient
 
 _LOGGER = logging.getLogger(__name__)
 _ENERGY_REPORT_REFRESH_SECONDS = 60 * 60
@@ -49,9 +51,10 @@ class HuaweiAutoCloudCoordinator(DataUpdateCoordinator[dict[str, dict[str, Any]]
         } if isinstance(disabled_routes, (list, tuple, set)) else set()
         omp = payload.get("omp")
         session_data = omp.get("cookies") if isinstance(omp, Mapping) else None
-        self.client = OmpClient()
+        self.omp_client = OmpClient()
+        self.gateway_client = VehicleGatewayClient()
         if isinstance(session_data, Mapping):
-            self.client.set_omp_cookies(session_data)
+            self.omp_client.set_omp_cookies(session_data)
         self._commit_lock = asyncio.Lock()
         self._account_refresh_lock = asyncio.Lock()
         self._scope_locks: dict[str, asyncio.Lock] = {}
@@ -63,7 +66,6 @@ class HuaweiAutoCloudCoordinator(DataUpdateCoordinator[dict[str, dict[str, Any]]
             for route_id, next_check in firmware_checks.items()
             if route_id in self.routes and isinstance(next_check, (int, float))
         } if isinstance(firmware_checks, Mapping) else {}
-        self._raw_status_snapshots: dict[str, dict[str, Any]] = {}
         # The first update after setup is intentionally presence-only, even if
         # the preceding Home Assistant run last saw the vehicle online.
         self._route_online: dict[str, bool | None] = {route_id: None for route_id in self.routes}
@@ -95,7 +97,7 @@ class HuaweiAutoCloudCoordinator(DataUpdateCoordinator[dict[str, dict[str, Any]]
                 result[route_id] = data
                 self._last_data[route_id] = data
                 self.route_errors.pop(route_id, None)
-            except (OmpApiError, OmpAuthorizationError, RouteUnavailable, ValueError) as error:
+            except (OmpApiError, VehicleGatewayApiError, OmpAuthorizationError, RouteUnavailable, ValueError) as error:
                 self.route_errors[route_id] = type(error).__name__
                 if isinstance(previous, dict) and previous:
                     result[route_id] = previous
@@ -107,17 +109,12 @@ class HuaweiAutoCloudCoordinator(DataUpdateCoordinator[dict[str, dict[str, Any]]
         """Latest lightweight connection state for the online binary sensor."""
         return self._route_online
 
-    @property
-    def raw_status_snapshots(self) -> Mapping[str, dict[str, Any]]:
-        """One in-memory raw dynamic frame per route for the diagnostic entity."""
-        return self._raw_status_snapshots
-
     def is_route_controllable(self, route_id: str) -> bool:
-        """A route with a vanished enterprise scope must never send a command."""
+        """A route with a vanished gateway binding must never send a command."""
         route = self.routes.get(route_id)
         return bool(
             route
-            and route.endpoint_id != UNROUTABLE_OMP_ENDPOINT_ID
+            and route.binding_id != UNROUTABLE_BINDING_ID
             and route.spec_id != DISCOVERED_VEHICLE_SPEC_ID
             and route_id not in self._uncontrollable_routes
             and route.session_id in self.sessions
@@ -128,7 +125,7 @@ class HuaweiAutoCloudCoordinator(DataUpdateCoordinator[dict[str, dict[str, Any]]
         online = self._route_online[route_id]
         context, raw = await self._async_route_request(
             route_id,
-            OmpOperation.DYNAMIC_INFOS,
+            VehicleOperation.DYNAMIC_INFOS,
             payload=sections_for_route(spec, online),
         )
         if not self.registry.is_current(context):
@@ -144,7 +141,7 @@ class HuaweiAutoCloudCoordinator(DataUpdateCoordinator[dict[str, dict[str, Any]]
             # full frame now so entities do not wait for the next 30-second run.
             context, raw = await self._async_route_request(
                 route_id,
-                OmpOperation.DYNAMIC_INFOS,
+                VehicleOperation.DYNAMIC_INFOS,
                 payload=sections_for_route(spec, True),
             )
             if not self.registry.is_current(context):
@@ -157,7 +154,6 @@ class HuaweiAutoCloudCoordinator(DataUpdateCoordinator[dict[str, dict[str, Any]]
             return None
         if observed_online is True:
             self._route_online[route_id] = True
-            self._raw_status_snapshots.setdefault(route_id, dict(data))
         return data
 
     async def _async_energy_report(self, route_id: str) -> dict[str, Any] | None:
@@ -165,25 +161,25 @@ class HuaweiAutoCloudCoordinator(DataUpdateCoordinator[dict[str, dict[str, Any]]
         if now < self._energy_refresh_at.get(route_id, 0):
             return self._energy_reports.get(route_id)
         try:
-            context, report = await self._async_route_request(route_id, OmpOperation.ENERGY_REPORT)
+            context, report = await self._async_route_request(route_id, VehicleOperation.ENERGY_REPORT)
             if self.registry.is_current(context) and isinstance(report, dict):
                 self._energy_reports[route_id] = report
-        except (OmpApiError, RouteUnavailable, ValueError):
+        except (VehicleGatewayApiError, RouteUnavailable, ValueError):
             pass
         self._energy_refresh_at[route_id] = now + _ENERGY_REPORT_REFRESH_SECONDS
         return self._energy_reports.get(route_id)
 
     async def _async_refresh_firmware_version(self, route_id: str) -> None:
         """Refresh static firmware metadata at most once per online vehicle per day."""
-        from .omp.enterprises import endpoint_for_id
+        from .omp.enterprises import binding_for_id
 
-        if not endpoint_for_id(self.routes[route_id].endpoint_id).supports(OmpOperation.FIRMWARE):
+        if not binding_for_id(self.routes[route_id].binding_id).supports(VehicleOperation.FIRMWARE):
             return
         now = time.time()
         if now < self._firmware_refresh_at.get(route_id, 0):
             return
         try:
-            context, response = await self._async_route_request(route_id, OmpOperation.FIRMWARE)
+            context, response = await self._async_route_request(route_id, VehicleOperation.FIRMWARE)
             if not self.registry.is_current(context):
                 return
             from .models import firmware_sw_version
@@ -193,7 +189,7 @@ class HuaweiAutoCloudCoordinator(DataUpdateCoordinator[dict[str, dict[str, Any]]
                 self.vehicles = {**self.vehicles, route_id: replace(self.vehicles[route_id], sw_version=version)}
                 await self._async_update_device_software_version(route_id, version)
             self._firmware_refresh_at[route_id] = now + FIRMWARE_REFRESH_SECONDS
-        except (OmpApiError, RouteUnavailable, ValueError):
+        except (VehicleGatewayApiError, RouteUnavailable, ValueError):
             # A firmware lookup must never make an otherwise healthy vehicle
             # unavailable. Retry sooner than the normal daily cadence.
             self._firmware_refresh_at[route_id] = now + FIRMWARE_RETRY_SECONDS
@@ -209,11 +205,11 @@ class HuaweiAutoCloudCoordinator(DataUpdateCoordinator[dict[str, dict[str, Any]]
 
     async def async_control_now_departure_plan(self, route_id: str, *, enabled: bool) -> None:
         self._require_control(route_id, VehicleControl.DEPARTURE_PLAN)
-        await self._async_command(route_id, OmpOperation.DEPARTURE_PLAN, {"enabled": str(enabled).lower()})
+        await self._async_command(route_id, VehicleOperation.DEPARTURE_PLAN, {"enabled": str(enabled).lower()})
 
     async def async_control_sentry_mode(self, route_id: str, *, enabled: bool) -> None:
         self._require_control(route_id, VehicleControl.SENTRY_MODE)
-        await self._async_command(route_id, OmpOperation.SENTRY_MODE, {"open": str(enabled).lower()})
+        await self._async_command(route_id, VehicleOperation.SENTRY_MODE, {"open": str(enabled).lower()})
 
     async def async_control_air_conditioner(self, route_id: str, *, enabled: bool, target_temp: int | None = None) -> None:
         self._require_control(route_id, VehicleControl.AIR_CONDITIONER)
@@ -222,24 +218,24 @@ class HuaweiAutoCloudCoordinator(DataUpdateCoordinator[dict[str, dict[str, Any]]
         query = {"enabled": str(enabled).lower()}
         if target_temp is not None:
             query["targetTemp"] = str(target_temp)
-        await self._async_command(route_id, OmpOperation.AIR_CONDITIONER, query)
+        await self._async_command(route_id, VehicleOperation.AIR_CONDITIONER, query)
 
     async def async_control_air_conditioner_rapid(self, route_id: str, *, enabled: bool, mode: int) -> None:
         self._require_control(route_id, VehicleControl.AIR_CONDITIONER)
         if mode not in {1, 2}:
             raise ValueError("rapid air-conditioner mode must be 1 or 2")
-        await self._async_command(route_id, OmpOperation.RAPID_AIR_CONDITIONER, {"enabled": str(enabled).lower(), "mode": str(mode)})
+        await self._async_command(route_id, VehicleOperation.RAPID_AIR_CONDITIONER, {"enabled": str(enabled).lower(), "mode": str(mode)})
 
     async def async_control_defrost(self, route_id: str, *, enabled: bool) -> None:
         self._require_control(route_id, VehicleControl.AIR_CONDITIONER)
-        await self._async_command(route_id, OmpOperation.DEFROST, {"enabled": str(enabled).lower()})
+        await self._async_command(route_id, VehicleOperation.DEFROST, {"enabled": str(enabled).lower()})
 
     def _require_control(self, route_id: str, control: VehicleControl) -> None:
         spec = self.vehicle_specs.get(route_id)
         if spec is None or not spec.supports(control) or not self.is_route_controllable(route_id):
             raise RouteUnavailable(f"route does not support {control.value}")
 
-    async def _async_command(self, route_id: str, operation: OmpOperation, query: Mapping[str, str]) -> None:
+    async def _async_command(self, route_id: str, operation: VehicleOperation, query: Mapping[str, str]) -> None:
         route = self.routes.get(route_id)
         if route is None:
             raise RouteUnavailable("unknown route")
@@ -249,19 +245,19 @@ class HuaweiAutoCloudCoordinator(DataUpdateCoordinator[dict[str, dict[str, Any]]
         # cannot be withdrawn, so this is intentionally a pre-dispatch fence.
         async with scope_lock, self._account_refresh_lock:
             context = self.registry.request_context(route_id, operation)
-            status = self.registry.request_context(route_id, OmpOperation.COMMAND_STATUS)
+            status = self.registry.request_context(route_id, VehicleOperation.COMMAND_STATUS)
             try:
                 await self.hass.async_add_executor_job(
-                    partial(self.client.command, context, query=query, command_status_context=status)
+                    partial(self.gateway_client.command, context, query=query, command_status_context=status)
                 )
-            except OmpCommandError as error:
+            except VehicleCommandError as error:
                 if error.result_code not in _UNCHANGED_COMMAND_CODES:
                     raise
             if not self.registry.is_current(context):
                 raise RouteUnavailable("route changed while the command was in flight")
         await self.async_request_refresh()
 
-    async def _async_route_request(self, route_id: str, operation: OmpOperation, *, payload: dict[str, Any] | None = None) -> tuple[Any, Any]:
+    async def _async_route_request(self, route_id: str, operation: VehicleOperation, *, payload: dict[str, Any] | None = None) -> tuple[Any, Any]:
         route = self.routes.get(route_id)
         if route is None:
             raise RouteUnavailable("unknown route")
@@ -270,17 +266,17 @@ class HuaweiAutoCloudCoordinator(DataUpdateCoordinator[dict[str, dict[str, Any]]
             async with scope_lock, self._account_refresh_lock:
                 context = self.registry.request_context(route_id, operation)
                 response = await self.hass.async_add_executor_job(
-                    partial(self.client.request, context, payload=payload)
+                    partial(self.gateway_client.request, context, payload=payload)
                 )
             return context, response
-        except OmpApiError as error:
-            if not _is_enterprise_token_failure(error):
+        except VehicleGatewayApiError as error:
+            if not _is_vehicle_gateway_token_failure(error):
                 raise
             await self.async_refresh_session(route.session_id)
             async with scope_lock, self._account_refresh_lock:
                 context = self.registry.request_context(route_id, operation)
                 response = await self.hass.async_add_executor_job(
-                    partial(self.client.request, context, payload=payload)
+                    partial(self.gateway_client.request, context, payload=payload)
                 )
             return context, response
 
@@ -293,12 +289,12 @@ class HuaweiAutoCloudCoordinator(DataUpdateCoordinator[dict[str, dict[str, Any]]
                 raise RouteUnavailable("authorization scope is unavailable")
             account_generation = self.account.account_generation
             try:
-                refreshed = await self.hass.async_add_executor_job(refresh_enterprise_session, self.client, self.account, current)
+                refreshed = await self.hass.async_add_executor_job(refresh_vehicle_gateway_session, self.omp_client, self.account, current)
             except (OmpApiError, OmpAuthorizationError):
                 await self._async_refresh_account_and_sessions(account_generation)
                 refreshed = self.sessions.get(session_id)
                 if refreshed is None:
-                    raise RouteUnavailable("account refresh did not rebuild this enterprise scope")
+                    raise RouteUnavailable("account refresh did not rebuild this gateway binding")
             if (
                 self.account.account_generation != account_generation
                 or self.sessions.get(session_id) is not current
@@ -322,7 +318,7 @@ class HuaweiAutoCloudCoordinator(DataUpdateCoordinator[dict[str, dict[str, Any]]
             try:
                 refreshed_account = await self.hass.async_add_executor_job(
                     refresh_account_session,
-                    self.client,
+                    self.omp_client,
                     self.account,
                 )
             except OmpApiError as error:
@@ -331,34 +327,38 @@ class HuaweiAutoCloudCoordinator(DataUpdateCoordinator[dict[str, dict[str, Any]]
                 raise ConfigEntryAuthFailed("Huawei Auto Cloud account authentication expired") from error
             except OmpAuthorizationError as error:
                 raise ConfigEntryAuthFailed("Huawei Auto Cloud account authentication expired") from error
-            try:
-                response = await self.hass.async_add_executor_job(
-                    partial(
-                        self.client.vehicle_auth,
-                        xid=refreshed_account.xid,
-                        device_id=refreshed_account.omp_device_id,
-                        user_id=refreshed_account.omp_user_id,
-                        native_device_model=refreshed_account.native_device_model,
+            discovered_by_binding: dict[str, VehicleGatewaySession] = {}
+            for binding in vehicle_authorization_bindings():
+                try:
+                    response = await self.hass.async_add_executor_job(
+                        partial(
+                            self.omp_client.vehicle_auth,
+                            xid=refreshed_account.xid,
+                            device_id=refreshed_account.omp_device_id,
+                            user_id=refreshed_account.omp_user_id,
+                            enterprise_code=binding.omp_enterprise_code,
+                            native_device_model=refreshed_account.native_device_model,
+                        )
                     )
-                )
-            except OmpApiError as error:
-                if error.status in {401, 403}:
-                    raise ConfigEntryAuthFailed("Huawei Auto Cloud account authentication expired") from error
-                raise
-            try:
-                discovered = create_enterprise_sessions(refreshed_account, response)
-            except OmpAuthorizationError:
-                discovered = {}
+                except OmpApiError as error:
+                    if not binding.omp_enterprise_code and error.status in {401, 403}:
+                        raise ConfigEntryAuthFailed("Huawei Auto Cloud account authentication expired") from error
+                    continue
+                try:
+                    for session in create_vehicle_gateway_sessions(response).values():
+                        discovered_by_binding[session.binding_id] = session
+                except OmpAuthorizationError:
+                    continue
             refreshed_scopes, _ = await self.hass.async_add_executor_job(
-                refresh_enterprise_sessions,
-                self.client,
+                refresh_vehicle_gateway_sessions,
+                self.omp_client,
                 refreshed_account,
-                discovered,
+                discovered_by_binding,
             )
-            by_endpoint = {session.endpoint_id: session for session in refreshed_scopes.values()}
-            replacement: dict[str, EnterpriseSession] = {}
+            by_binding = {session.binding_id: session for session in refreshed_scopes.values()}
+            replacement: dict[str, VehicleGatewaySession] = {}
             for session_id, old_session in self.sessions.items():
-                new_session = by_endpoint.get(old_session.endpoint_id)
+                new_session = by_binding.get(old_session.binding_id)
                 if new_session is None:
                     self._uncontrollable_routes.update(
                         route_id for route_id, route in self.routes.items() if route.session_id == session_id
@@ -373,9 +373,11 @@ class HuaweiAutoCloudCoordinator(DataUpdateCoordinator[dict[str, dict[str, Any]]
             payload = canonical_asset_payload(self._asset_payload)
             omp = dict(payload["omp"])
             omp["session"] = asdict(self.account)
-            omp["enterprise_sessions"] = {session_id: asdict(session) for session_id, session in self.sessions.items()}
-            omp["cookies"] = self.client.omp_cookies
+            omp["cookies"] = self.omp_client.omp_cookies
             payload["omp"] = omp
+            vehicle_gateway = dict(payload.get("vehicle_gateway", {}))
+            vehicle_gateway["sessions"] = {session_id: asdict(session) for session_id, session in self.sessions.items()}
+            payload["vehicle_gateway"] = vehicle_gateway
             vehicles = dict(payload["vehicles"])
             for route_id, route in self.routes.items():
                 vehicle_asset = dict(vehicles[route_id])
@@ -396,17 +398,18 @@ class HuaweiAutoCloudCoordinator(DataUpdateCoordinator[dict[str, dict[str, Any]]
             self.revision = next_revision
 
 
-def _load_payload(payload: Mapping[str, Any]) -> tuple[AccountSession, dict[str, EnterpriseSession], dict[str, VehicleRoute], dict[str, Vehicle]]:
+def _load_payload(payload: Mapping[str, Any]) -> tuple[AccountSession, dict[str, VehicleGatewaySession], dict[str, VehicleRoute], dict[str, Vehicle]]:
     omp_raw = payload.get("omp")
     vehicles_raw = payload.get("vehicles")
     if not isinstance(omp_raw, Mapping) or not isinstance(vehicles_raw, Mapping):
         raise ValueError("account asset is incomplete")
     account_raw = omp_raw.get("session")
-    sessions_raw = omp_raw.get("enterprise_sessions")
+    gateway_raw = payload.get("vehicle_gateway")
+    sessions_raw = gateway_raw.get("sessions") if isinstance(gateway_raw, Mapping) else None
     if not isinstance(account_raw, Mapping) or not isinstance(sessions_raw, Mapping):
         raise ValueError("account asset is incomplete")
     account = AccountSession(**dict(account_raw))
-    sessions = {str(session_id): EnterpriseSession(**dict(value)) for session_id, value in sessions_raw.items() if isinstance(value, Mapping)}
+    sessions = {str(session_id): VehicleGatewaySession(**dict(value)) for session_id, value in sessions_raw.items() if isinstance(value, Mapping)}
     routes = {
         str(route_id): VehicleRoute(**dict(value["route"]))
         for route_id, value in vehicles_raw.items()
@@ -420,7 +423,7 @@ def _load_payload(payload: Mapping[str, Any]) -> tuple[AccountSession, dict[str,
     unroutable_routes = {
         route_id
         for route_id, route in routes.items()
-        if route.endpoint_id == UNROUTABLE_OMP_ENDPOINT_ID and route.session_id == UNROUTABLE_OMP_SESSION_ID
+        if route.binding_id == UNROUTABLE_BINDING_ID and route.session_id == UNROUTABLE_SESSION_ID
     }
     if not routes or set(routes) != set(vehicles) or (not sessions and not unroutable_routes):
         raise ValueError("account asset has inconsistent routes")
@@ -429,7 +432,7 @@ def _load_payload(payload: Mapping[str, Any]) -> tuple[AccountSession, dict[str,
 
 
 
-def _is_enterprise_token_failure(error: OmpApiError) -> bool:
+def _is_vehicle_gateway_token_failure(error: VehicleGatewayApiError) -> bool:
     response = error.response
     return error.status in {401, 404} and (
         not isinstance(response, Mapping)

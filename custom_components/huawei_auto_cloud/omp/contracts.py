@@ -1,4 +1,4 @@
-"""Static, reviewed contracts for OMP manufacturer endpoints."""
+"""Static, reviewed contracts for the common IVCS vehicle namespace."""
 
 from __future__ import annotations
 
@@ -7,11 +7,11 @@ from enum import StrEnum
 
 
 class CredentialPurpose(StrEnum):
-    VEHICLE_AUTHORIZATION = "vehicle_authorization"
+    VEHICLE_GATEWAY = "vehicle_gateway"
 
 
-class OmpOperation(StrEnum):
-    """Reviewed operations that a manufacturer endpoint may expose."""
+class VehicleOperation(StrEnum):
+    """Reviewed operations exposed by an IVCS vehicle binding."""
 
     VEHICLE_LIST = "vehicle_list"
     VEHICLE_PROFILE = "vehicle_profile"
@@ -28,8 +28,8 @@ class OmpOperation(StrEnum):
 
 
 @dataclass(frozen=True)
-class OmpRequestContract:
-    """One verified request shape; this is deliberately not a runtime DSL."""
+class VehicleRequestContract:
+    """One verified IVCS request shape; not a runtime DSL."""
 
     contract_id: str
     evidence_version: str
