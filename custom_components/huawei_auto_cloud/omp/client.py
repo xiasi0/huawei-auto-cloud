@@ -1,23 +1,14 @@
-"""Stateless OMP/APIG HTTP client.
-
-Vehicle requests are impossible without an immutable route-scoped context.
-"""
+"""Huawei account and OMP authorization client."""
 
 from __future__ import annotations
 
-from datetime import datetime
 import json
 import secrets
-import ssl
-import time
-import uuid
 from typing import Any, Callable, Mapping
 from urllib.error import HTTPError
-from urllib.parse import quote, urlencode, urlsplit
-from urllib.request import HTTPSHandler, HTTPRedirectHandler, Request, build_opener, urlopen
+from urllib.request import Request, urlopen
 
 from ..const import (
-    DEFAULT_APIG_CLIENT_VERSION,
     DEFAULT_DEVICE_MODEL,
     DEFAULT_NATIVE_DEVICE_MODEL,
     DEFAULT_OMP_CLIENT_TYPE,
@@ -25,18 +16,9 @@ from ..const import (
     DEFAULT_USER_AGENT,
     OMP_BASE_ORIGIN,
 )
-from ..models import OmpDiscoveryContext, OmpRequestContext
-from .contracts import CredentialPurpose, OmpRequestContract
 
 JSON = dict[str, Any]
 Transport = Callable[[str, str, dict[str, str], bytes | None, float], tuple[int, dict[str, str], bytes]]
-
-DEFAULT_DYNAMIC_INFO_SECTIONS: JSON = {
-    "vehicleStatus": 0, "door": 0, "window": 0, "tire": 0, "seat": 0, "lamp": 0,
-    "charge": 0, "hvac": 0, "fuel": 0, "welcome": 0, "departurePlan": 0,
-    "airConditionPlan": 0, "warmCoolingBox": 0, "sentryPlan": 0,
-}
-
 
 class OmpApiError(RuntimeError):
     def __init__(self, status: int, response: Any, *, response_headers: Mapping[str, str] | None = None) -> None:
@@ -46,23 +28,12 @@ class OmpApiError(RuntimeError):
         self.response_headers = dict(response_headers or {})
 
 
-class OmpCommandError(RuntimeError):
-    def __init__(self, message: str, *, result_code: Any = None) -> None:
-        super().__init__(message)
-        self.result_code = result_code
-
-
 class OmpClient:
-    """HTTP transport with no current enterprise, gateway, token, or vehicle state."""
+    """Huawei account and OMP authorization client."""
 
     def __init__(self, *, timeout: float = 20.0, transport: Transport | None = None) -> None:
         self.timeout = timeout
-        # OMP/Huawei account flows legitimately use HTTP redirects. APIG
-        # vehicle routes do not: their origin is part of each route binding.
-        # Keep those policies separate; sharing a no-redirect transport here
-        # broke first-time OMP login after the multi-route refactor.
-        self._omp_transport = transport or _urllib_transport
-        self._apig_transport = transport or _urllib_apig_transport
+        self._transport = transport or _urllib_transport
         self._cookies: dict[str, str] = {}
         self._omp_warm_attempted = False
 
@@ -90,18 +61,32 @@ class OmpClient:
         )
 
     def vehicle_auth(self, *, xid: str, device_id: str, user_id: str | None,
-                     native_device_model: str = DEFAULT_NATIVE_DEVICE_MODEL) -> Any:
+                     enterprise_code: str = "", native_device_model: str = DEFAULT_NATIVE_DEVICE_MODEL) -> Any:
         return self._post_omp(
             "/xcar/omp/xbs/account/vehicle/auth",
             {"deviceInfo": {"type": "1", "id": device_id, "model": DEFAULT_DEVICE_MODEL}},
-            _omp_session_headers(native_device_model, xid=xid, user_id=user_id),
+            _omp_session_headers(native_device_model, xid=xid, user_id=user_id, enterprise_code=enterprise_code),
         )
 
     def vehicle_management_list(self, *, xid: str, device_id: str, user_id: str | None, enterprise_code: str,
-                                native_device_model: str = DEFAULT_NATIVE_DEVICE_MODEL, refresh: bool = True) -> Any:
+                                 native_device_model: str = DEFAULT_NATIVE_DEVICE_MODEL, refresh: bool = True) -> Any:
         return self._post_omp(
             "/xcar/omp/xbs/vehicle/management/list",
             {"refreshFlag": "true" if refresh else "false", "deviceInfo": {"type": "1", "id": device_id, "model": DEFAULT_DEVICE_MODEL}},
+            _omp_session_headers(native_device_model, xid=xid, user_id=user_id, enterprise_code=enterprise_code),
+        )
+
+    def vehicle_management_query(self, *, vehicle_id: str, xid: str, device_id: str, user_id: str | None,
+                                 enterprise_code: str,
+                                 native_device_model: str = DEFAULT_NATIVE_DEVICE_MODEL) -> Any:
+        """Fetch one vehicle's OMP merged information and resource declaration."""
+        return self._post_omp(
+            "/xcar/omp/xbs/vehicle/management/query",
+            {
+                "vehicleId": vehicle_id,
+                "enterpriseCode": enterprise_code,
+                "deviceInfo": {"type": "1", "id": device_id, "model": DEFAULT_DEVICE_MODEL},
+            },
             _omp_session_headers(native_device_model, xid=xid, user_id=user_id, enterprise_code=enterprise_code),
         )
 
@@ -120,40 +105,6 @@ class OmpClient:
             {"tokenType": 0, "requireAccountId": False, "deviceInfo": {"type": "1", "id": device_id, "model": DEFAULT_DEVICE_MODEL}},
             _omp_session_headers(native_device_model, xid=xid, user_id=user_id, enterprise_code=enterprise_code),
         )
-
-    def request(self, context: OmpRequestContext | OmpDiscoveryContext, *, payload: JSON | None = None, query: Mapping[str, str] | None = None,
-                path_values: Mapping[str, str] | None = None) -> Any:
-        context.require(CredentialPurpose.VEHICLE_AUTHORIZATION)
-        path = context.contract.render_path(**dict(path_values or {}))
-        if query:
-            path = f"{path}?{urlencode(query)}"
-        url = f"{context.gateway_origin.rstrip('/')}{path}"
-        _validate_fixed_https_origin(url, context.gateway_origin)
-        body = None if context.contract.method == "GET" else json.dumps(payload or {}, ensure_ascii=False).encode("utf-8")
-        headers = _apig_headers(context.authorization, context.ivcs_device_id, getattr(context, "vehicle_id", None))
-        missing_headers = context.contract.required_header_names - headers.keys()
-        if missing_headers:
-            raise ValueError(f"request contract is missing required headers: {', '.join(sorted(missing_headers))}")
-        return self._request(context.contract.method, url, headers, body, transport=self._apig_transport)
-
-    def dynamic_infos(self, context: OmpRequestContext, sections: JSON | None = None) -> Any:
-        return self.request(context, payload=dict(DEFAULT_DYNAMIC_INFO_SECTIONS if sections is None else sections))
-
-    def command(self, context: OmpRequestContext, *, query: Mapping[str, str], command_status_context: OmpRequestContext) -> None:
-        command_id = self.request(context, query=query)
-        if not isinstance(command_id, str) or not command_id:
-            raise OmpCommandError("vehicle command did not return a command id")
-        deadline = time.monotonic() + 20
-        while True:
-            response = self.request(command_status_context, path_values={"command_id": quote(command_id, safe="")})
-            result_code = response.get("resultCode") if isinstance(response, Mapping) else None
-            if result_code in {0, "0"}:
-                return
-            if result_code not in {-100, "-100"}:
-                raise OmpCommandError("vehicle command failed", result_code=result_code)
-            if time.monotonic() >= deadline:
-                raise OmpCommandError("vehicle command timed out")
-            time.sleep(0.5)
 
     def _post_omp(self, path: str, payload: JSON, headers: dict[str, str]) -> Any:
         if not self._omp_warm_attempted:
@@ -174,14 +125,12 @@ class OmpClient:
         headers: dict[str, str],
         body: bytes | None,
         *,
-        transport: Transport | None = None,
         use_cookies: bool = False,
     ) -> Any:
         request_headers = dict(headers)
         if use_cookies and self._cookies:
             request_headers["Cookie"] = "; ".join(f"{key}={value}" for key, value in self._cookies.items())
-        selected_transport = transport or self._omp_transport
-        status, response_headers, response_body = selected_transport(method, url, request_headers, body, self.timeout)
+        status, response_headers, response_body = self._transport(method, url, request_headers, body, self.timeout)
         if use_cookies:
             self._capture_cookies(response_headers)
         response = _decode_response(response_body)
@@ -210,51 +159,10 @@ def _omp_session_headers(native_device_model: str, *, xid: str | None = None, us
     return {"deviceModel": native_device_model, "uid": user_id or "", "xid": xid or "", "EC": enterprise_code}
 
 
-def _apig_headers(authorization: str, device_id: str, vehicle_id: str | None) -> dict[str, str]:
-    created = datetime.now().astimezone().strftime("%Y%m%d%H%M%S%f")[:-3]
-    headers = {
-        "Authorization": authorization, "X-Nonce": str(uuid.uuid4()).upper(), "X-Created": created,
-        "X-App-Id": "0", "X-Client-Model": "iPhone", "X-Client-Language": "zh-Hans", "X-Client-Type": "2",
-        "X-Client-Version": DEFAULT_APIG_CLIENT_VERSION, "Accept": "*/*", "Accept-Language": "zh-Hans-CN;q=1",
-        "User-Agent": DEFAULT_USER_AGENT, "Content-Type": "application/json", "X-Device-Id": device_id,
-    }
-    if vehicle_id:
-        headers["X-Vehicle-Id"] = vehicle_id
-    return headers
-
-
-def _validate_fixed_https_origin(url: str, origin: str) -> None:
-    target, expected = urlsplit(url), urlsplit(origin)
-    if target.scheme != "https" or (target.scheme, target.netloc) != (expected.scheme, expected.netloc):
-        raise ValueError("request escaped its verified HTTPS origin")
-
-
-class _NoRedirect(HTTPRedirectHandler):
-    def redirect_request(self, req, fp, code, msg, headers, newurl):  # type: ignore[no-untyped-def]
-        return None
-
-
 def _urllib_transport(method: str, url: str, headers: dict[str, str], body: bytes | None, timeout: float) -> tuple[int, dict[str, str], bytes]:
     request = Request(url, data=body, headers=headers, method=method)
     try:
         with urlopen(request, timeout=timeout) as response:
-            return response.status, dict(response.headers.items()), response.read()
-    except HTTPError as error:
-        return error.code, dict(error.headers.items()), error.read()
-
-
-def _urllib_apig_transport(method: str, url: str, headers: dict[str, str], body: bytes | None, timeout: float) -> tuple[int, dict[str, str], bytes]:
-    """APIG transport without certificate-chain validation or redirects.
-
-    The observed APIG gateway does not present a certificate chain Home
-    Assistant can validate. This is its explicit, default transport policy,
-    not a retry or downgrade from verified TLS. OMP and Huawei account flows
-    continue to use the verified ``_urllib_transport`` above.
-    """
-    request = Request(url, data=body, headers=headers, method=method)
-    try:
-        context = ssl._create_unverified_context()
-        with build_opener(_NoRedirect, HTTPSHandler(context=context)).open(request, timeout=timeout) as response:
             return response.status, dict(response.headers.items()), response.read()
     except HTTPError as error:
         return error.code, dict(error.headers.items()), error.read()

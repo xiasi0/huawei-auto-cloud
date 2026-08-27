@@ -39,7 +39,6 @@
     },
     "entity": {
     "sensor": {
-      "raw_vehicle_status": {"name": "Raw vehicle status"},
       "model": {
                 "name": "Model"
             },

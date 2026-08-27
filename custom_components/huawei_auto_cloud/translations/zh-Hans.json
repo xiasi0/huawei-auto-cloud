@@ -39,9 +39,6 @@
   },
   "entity": {
     "sensor": {
-      "raw_vehicle_status": {
-        "name": "原始车辆状态"
-      },
       "model": {
         "name": "车型"
       },

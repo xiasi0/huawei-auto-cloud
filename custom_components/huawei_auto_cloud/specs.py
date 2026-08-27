@@ -1,7 +1,7 @@
 """Reviewed vehicle specifications and capability declarations.
 
 This module is the only place to add a supported model. It deliberately
-contains capability data, not endpoint, session, or HTTP logic.
+contains capability data, not binding, session, or HTTP logic.
 """
 
 from __future__ import annotations
@@ -356,6 +356,18 @@ SPECS: tuple[VehicleSpec, ...] = (
         key="luxeed_r7",
         enterprise_code="CHERY",
         project_code="EHY-REEV-2025MY",
+        sensors=SERES_COMMON_SENSORS,
+        controls=frozenset({
+            VehicleControl.AIR_CONDITIONER,
+            VehicleControl.SENTRY_MODE,
+            VehicleControl.DEPARTURE_PLAN,
+        }),
+        supports_location=True,
+    ),
+    VehicleSpec(
+        key="saic_h5",
+        enterprise_code="SAIC",
+        project_code="SHA-EREV",
         sensors=SERES_COMMON_SENSORS,
         controls=frozenset({
             VehicleControl.AIR_CONDITIONER,

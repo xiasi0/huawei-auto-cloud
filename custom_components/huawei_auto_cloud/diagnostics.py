@@ -16,7 +16,7 @@ async def async_get_config_entry_diagnostics(hass, entry) -> dict[str, Any]:
         "account_generation": coordinator.account.account_generation,
         "routes": {
             route_id: {
-                "endpoint_id": route.endpoint_id,
+                "binding_id": route.binding_id,
                 "enterprise_code": route.enterprise_code,
                 "spec_id": route.spec_id,
                 "session_generation": coordinator.sessions[route.session_id].generation,

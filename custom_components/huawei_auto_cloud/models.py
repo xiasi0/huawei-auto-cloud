@@ -7,12 +7,12 @@ from datetime import datetime
 from typing import Any, Iterable, Mapping
 
 from .const import DOMAIN
-from .omp.contracts import CredentialPurpose, OmpRequestContract
+from .omp.contracts import CredentialPurpose, VehicleRequestContract
 
 
 @dataclass(frozen=True)
 class AccountSession:
-    """Account credentials shared by all enterprise authorization scopes."""
+    """OMP account credentials shared by all vehicle gateway scopes."""
 
     account_generation: int
     access_token: str
@@ -26,11 +26,11 @@ class AccountSession:
 
 
 @dataclass(frozen=True)
-class EnterpriseSession:
-    """Authorization material for exactly one verified enterprise scope."""
+class VehicleGatewaySession:
+    """Authorization material for exactly one verified IVCS binding."""
 
     session_id: str
-    endpoint_id: str
+    binding_id: str
     enterprise_code: str
     authorization: str
     generation: int
@@ -43,19 +43,19 @@ class VehicleRoute:
 
     route_id: str
     vehicle_id: str
-    endpoint_id: str
+    binding_id: str
     session_id: str
     enterprise_code: str
     spec_id: str
 
 
 @dataclass(frozen=True)
-class OmpRequestContext:
+class VehicleRequestContext:
     """Immutable, runtime-only authorization and request routing snapshot."""
 
     route_id: str
     vehicle_id: str
-    endpoint_id: str
+    binding_id: str
     enterprise_code: str
     gateway_origin: str
     authorization: str
@@ -63,20 +63,20 @@ class OmpRequestContext:
     account_generation: int
     session_id: str
     session_generation: int
-    contract: OmpRequestContract
+    contract: VehicleRequestContract
 
     def require(self, purpose: CredentialPurpose) -> None:
         if self.contract.credential_purpose != purpose:
             raise ValueError(f"request contract {self.contract.contract_id} has the wrong credential purpose")
         if not self.authorization:
-            raise ValueError("request context is missing enterprise authorization")
+            raise ValueError("request context is missing vehicle-gateway authorization")
 
 
 @dataclass(frozen=True)
-class OmpDiscoveryContext:
-    """Runtime-only enterprise context used before a vehicle route exists."""
+class VehicleDiscoveryContext:
+    """Runtime-only vehicle-gateway context used before a route exists."""
 
-    endpoint_id: str
+    binding_id: str
     enterprise_code: str
     gateway_origin: str
     authorization: str
@@ -84,7 +84,7 @@ class OmpDiscoveryContext:
     account_generation: int
     session_id: str
     session_generation: int
-    contract: OmpRequestContract
+    contract: VehicleRequestContract
 
     def require(self, purpose: CredentialPurpose) -> None:
         if self.contract.credential_purpose != purpose or not self.authorization:
@@ -201,7 +201,7 @@ def vehicle_device_info(vehicle: Vehicle, route: VehicleRoute) -> dict[str, Any]
     info: dict[str, Any] = {
         "identifiers": {(DOMAIN, route.route_id)},
         "name": vehicle.name,
-        "manufacturer": {"SERES": "赛力斯"}.get(route.enterprise_code, route.enterprise_code),
+        "manufacturer": {"SERES": "赛力斯", "SAIC": "上汽集团"}.get(route.enterprise_code, route.enterprise_code),
     }
     if vehicle.model:
         info["model"] = vehicle.model
@@ -220,51 +220,100 @@ def vehicle_merge_items(response: Any) -> list[dict[str, Any]]:
 def vehicle_resource_manifest(data: Mapping[str, Any]) -> dict[str, str | None] | None:
     """Extract a resource declaration from raw data or a merged vehicle profile.
 
-    During first discovery we merge the APIG vehicle-list item with an OMP
-    profile. The raw OMP item keeps ``vehicleResourceInfo`` at the top level,
-    while the normalized profile is stored under ``profile``. Prefer the raw
-    top-level declaration so that adding the normalized profile never masks a
-    real resource archive.
+    During first discovery we merge a vehicle-list item with a vehicle profile.
+    The raw profile keeps ``vehicleResourceInfo`` at the top level,
+    while the normalized profile is stored under ``profile``. IVCS gateways
+    may additionally wrap the same object under ``data``/``result`` or
+    ``vehicleInfo``. Prefer the first complete raw declaration so that adding
+    the normalized profile never masks a real resource archive.
     """
-    resource = data.get("vehicleResourceInfo")
-    if not isinstance(resource, Mapping):
-        profile = data.get("profile")
-        resource = profile.get("vehicleResourceInfo") if isinstance(profile, Mapping) else None
-    if not isinstance(resource, Mapping):
+    if not isinstance(data, Mapping):
         return None
-    resource_file = _string_value(resource.get("resourceFile"))
-    resource_sign = _string_value(resource.get("vehicleResourceSign"))
-    if not resource_file or not resource_sign:
-        return None
-    return {
-        "resourceFile": resource_file,
-        "resourceSign": resource_sign,
-        "resourceVersion": _string_value(resource.get("resourceVersion")),
-        "versionName": _string_value(resource.get("versionName")),
-    }
+    candidates: list[Mapping[str, Any]] = [data]
+    index = 0
+    while index < len(candidates):
+        candidate = candidates[index]
+        index += 1
+        resource = candidate.get("vehicleResourceInfo")
+        if isinstance(resource, Mapping):
+            resource_file = _string_value(resource.get("resourceFile"))
+            resource_sign = _string_value(resource.get("vehicleResourceSign"))
+            if resource_file and resource_sign:
+                return {
+                    "resourceFile": resource_file,
+                    "resourceSign": resource_sign,
+                    "resourceVersion": _string_value(resource.get("resourceVersion")),
+                    "versionName": _string_value(resource.get("versionName")),
+                }
+        for key in (
+            "profile",
+            "data",
+            "result",
+            "vehicleMargeInfo",
+            "vehicleInfo",
+            "vehicle",
+            "info",
+            "vehicleBaseInfo",
+        ):
+            nested = candidate.get(key)
+            if isinstance(nested, Mapping):
+                candidates.append(nested)
+    return None
 
 
 def resource_manifests_from_profile_responses(
     profile_responses: Mapping[str, Any],
     vehicle_ids: Iterable[str],
 ) -> dict[str, dict[str, str | None]]:
-    """Recover resource manifests from raw OMP profile responses.
+    """Recover resource manifests from raw vehicle-profile responses.
 
-    Raw profile responses are retained in the account asset precisely so an
+    Raw discovery responses are retained in the account asset precisely so an
     interrupted first-time resource download can be resumed without another
     login or vehicle-profile request. Only IDs belonging to the saved routes
     are returned.
     """
     known_vehicle_ids = set(vehicle_ids)
     manifests: dict[str, dict[str, str | None]] = {}
+
+    def add_manifest(data: Any, fallback_vehicle_id: str | None = None) -> None:
+        if not isinstance(data, Mapping):
+            return
+        vehicle_id = _profile_vehicle_id(data, fallback_vehicle_id)
+        if vehicle_id not in known_vehicle_ids:
+            return
+        if manifest := vehicle_resource_manifest(data):
+            manifests[vehicle_id] = manifest
+
     for response in profile_responses.values():
         for item in vehicle_merge_items(response):
-            vehicle = Vehicle.from_api(item)
-            if vehicle.id not in known_vehicle_ids:
-                continue
-            if manifest := vehicle_resource_manifest(item):
-                manifests[vehicle.id] = manifest
+            add_manifest(item)
+        if isinstance(response, Mapping):
+            add_manifest(response)
+            for key, item in response.items():
+                if isinstance(item, Mapping):
+                    add_manifest(item, str(key))
     return manifests
+
+
+def _profile_vehicle_id(data: Mapping[str, Any], fallback: str | None = None) -> str | None:
+    """Find a vehicle ID in a raw profile envelope without assuming its shape."""
+    candidate: Any = data
+    while isinstance(candidate, Mapping):
+        vehicle = Vehicle.from_api(candidate)
+        if vehicle.id:
+            return vehicle.id
+        nested = next(
+            (
+                candidate.get(key)
+                for key in ("data", "result", "vehicleMargeInfo", "vehicleInfo", "vehicle", "info")
+                if isinstance(candidate.get(key), Mapping)
+            ),
+            None,
+        )
+        if nested is None:
+            break
+        candidate = nested
+    return fallback
 
 
 def firmware_sw_version(response: Any) -> str | None:

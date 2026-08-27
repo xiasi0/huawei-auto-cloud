@@ -9,7 +9,6 @@ backup readers are the trusted boundary for the remaining asset contents.
 from __future__ import annotations
 
 import asyncio
-import base64
 from copy import deepcopy
 import hashlib
 import uuid
@@ -23,6 +22,9 @@ if TYPE_CHECKING:
     from homeassistant.core import HomeAssistant
 
 
+# Keep the Home Assistant Store major version stable. Payload shape changes
+# intentionally require removing and re-adding the integration instead of an
+# implicit Store migration.
 ASSET_STORAGE_VERSION = 1
 IDENTITY_STORAGE_VERSION = 1
 IDENTITY_STORAGE_KEY = f"{DOMAIN}/device_identity.json"
@@ -45,15 +47,11 @@ def encrypt_password(password: str, key: str) -> str:
     return Fernet(key.encode("ascii")).encrypt(password.encode("utf-8")).decode("ascii")
 
 
-def decrypt_password(encrypted_password: str, key: str) -> str:
-    return Fernet(key.encode("ascii")).decrypt(encrypted_password.encode("ascii")).decode("utf-8")
-
-
 class PhoneAssetStore:
     """Phone-named account asset with directly inspectable local diagnostics.
 
     This deliberately matches the legacy integration's local-debugging model:
-    account, vehicle, resource, and raw response records remain top-level JSON
+    account, vehicle, gateway-session, resource, and raw response records remain top-level JSON
     fields. Home Assistant storage-file access is therefore a sensitive local
     administrative capability. Device identity encryption material remains in
     its separate identity file.
@@ -78,12 +76,6 @@ class PhoneAssetStore:
             if key not in {"schema_version", "revision"}
         }
 
-    async def async_save(self, revision: int, payload: Mapping[str, Any]) -> None:
-        if revision < 0:
-            raise ValueError("account revision must not be negative")
-        async with self._lock:
-            await self._async_write(revision, payload)
-
     async def async_save_if_revision(
         self,
         expected_revision: int,
@@ -104,7 +96,7 @@ class PhoneAssetStore:
             await self._store.async_remove()
 
     async def _async_write(self, revision: int, payload: Mapping[str, Any]) -> None:
-        await self._store.async_save({"schema_version": 1, "revision": revision, **dict(payload)})
+        await self._store.async_save({"schema_version": ASSET_STORAGE_VERSION, "revision": revision, **dict(payload)})
 
 
 class IdentityStore:
@@ -191,7 +183,7 @@ def _asset_lock(hass: HomeAssistant, asset_key: str) -> asyncio.Lock:
 def canonical_asset_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
     """Remove derived per-vehicle copies from a directly inspectable asset.
 
-    Raw OMP list/profile responses are preserved exactly once under ``omp``.
+    Raw discovery responses are preserved exactly once under ``vehicle_gateway``.
     The vehicle layer owns only the route binding and normalized static
     projection; raw list-item duplication is not persisted there.
     """

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import base64
 import hashlib
 import hmac
 import json
@@ -78,36 +77,6 @@ class HuaweiIosAuthClient:
     @property
     def cookies(self) -> dict[str, str]:
         return dict(self._cookies)
-
-    def login_by_password(self, phone: str, password: str) -> dict[str, str]:
-        public_key = self._fetch_rsa_public_key()
-        body = urlencode(
-            {
-                "ver": DEFAULT_HUAWEI_IOS_VERSION,
-                "acT": "2",
-                "ac": phone,
-                "pw": _rsa_oaep_encrypt_hex(password, public_key),
-                "dvT": "6",
-                "dvID": self.device_id,
-                "tmT": self.native_device_model,
-                "clT": "125",
-                "cn": "125000000",
-                "os": "iOS15.8.8",
-                "app": DEFAULT_PACKAGE_NAME,
-                "dvN": self.device_model,
-                "uuid": self.device_id,
-                "lang": "zh-Hans-CN",
-                "dS": "0",
-                "mA": "0",
-                "deviceInfo": json.dumps(self._device_info(), separators=(",", ":")),
-            }
-        ).encode("utf-8")
-        headers = self._headers("application/x-www-form-urlencoded")
-        response = self._post(HUAWEI_LOGIN_V3_PATH, body, headers)
-        fields = _parse_form_response(response)
-        if fields.get("resultCode") not in (None, "0"):
-            raise HuaweiAuthError("password login", fields)
-        return fields
 
     def request_sms(self, phone: str) -> None:
         root = ET.Element("SMSCodeV3Req")
