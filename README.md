@@ -52,7 +52,7 @@
 
 | 品牌 | 官网当前车型/系列 | 本集成当前接入状态 |
 | --- | --- | --- |
-| 问界 | M5、M6、M7、M8、M9 | **已接入**：M5（`SERES-X1`、`SERES-X1EV-24-C`）、M6（`AITO-A15`）、M7（`SERES-F1-24-H`）、M8（`SERES-F3`） |
+| 问界 | M5、M6、M7、M8、M9 | **已接入**：M5（`SERES-X1`、`SERES-X1EV-24-C`）、M6（`AITO-A15`）、M7（`SERES-F1-24-H`、`SERES-F1-24-U`）、M8（`SERES-F3`） |
 | 享界 | S9、S9T、G9 | 未接入 |
 | 智界 | S7、R7、V9 | **已接入**：R7（`EHY-REEV-2025MY`） |
 | 尚界 | H5、Z7、Z7T | **已接入**：H5（`saic_h5`） |
