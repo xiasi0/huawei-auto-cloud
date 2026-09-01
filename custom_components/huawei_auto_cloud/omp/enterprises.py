@@ -130,7 +130,7 @@ _SERES_DISCOVERY = DiscoveryPlan(DiscoverySource.IVCS_VCAM, DiscoverySource.OMP_
 
 SERES_BINDING = _binding(
     "seres_ivcs", "SERES", "", "https://apig.fgaiservice.com",
-    frozenset({"seres_f3", "seres_aito_a15", "seres_x1", "seres_x1ev_24_c", "seres_f1_24_h", "seres_f1_24_u"}), _SERES_DISCOVERY, "2026-08-seres",
+    frozenset({"seres_f3", "seres_aito_a15", "seres_x1", "seres_x1_24_u", "seres_x1ev_24_c", "seres_f1_24_h", "seres_f1_24_u"}), _SERES_DISCOVERY, "2026-08-seres",
     enabled_operations=_NORMAL_IVCS_OPERATIONS | {VehicleOperation.ENERGY_REPORT, VehicleOperation.LOCATION, VehicleOperation.FIRMWARE},
 )
 CHERY_BINDING = _binding(
