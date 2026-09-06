@@ -411,6 +411,19 @@ SPECS: tuple[VehicleSpec, ...] = (
         }),
         supports_location=True,
     ),
+    # CHERY EHY-2025MY: 2026 model-year pure-EV Luxeed R7.
+    VehicleSpec(
+        key="luxeed_r7_ev_2026",
+        enterprise_code="CHERY",
+        project_code="EHY-2025MY",
+        sensors=SERES_COMMON_SENSORS,
+        controls=frozenset({
+            VehicleControl.AIR_CONDITIONER,
+            VehicleControl.SENTRY_MODE,
+            VehicleControl.DEPARTURE_PLAN,
+        }),
+        supports_location=True,
+    ),
 )
 
 
