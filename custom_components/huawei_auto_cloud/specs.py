@@ -401,6 +401,18 @@ SPECS: tuple[VehicleSpec, ...] = (
         supports_location=True,
     ),
     VehicleSpec(
+        key="luxeed_r7_2025_ev",
+        enterprise_code="CHERY",
+        project_code="EHY-2025MY",
+        sensors=SENSORS_WITHOUT_FUEL,
+        controls=frozenset({
+            VehicleControl.AIR_CONDITIONER,
+            VehicleControl.SENTRY_MODE,
+            VehicleControl.DEPARTURE_PLAN,
+        }),
+        supports_location=True,
+    ),
+    VehicleSpec(
         key="luxeed_r7_2026_ev",
         enterprise_code="CHERY",
         project_code="EHY-2026MY1",
