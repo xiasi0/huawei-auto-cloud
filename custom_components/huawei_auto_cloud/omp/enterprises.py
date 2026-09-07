@@ -135,7 +135,7 @@ SERES_BINDING = _binding(
 )
 CHERY_BINDING = _binding(
     "chery_ivcs", "CHERY", "CHERY", "https://apir.chssatsp.icvcs.com",
-    frozenset({"luxeed_r7"}), _VCAM_DISCOVERY, "2026-08-chery-runtime",
+    frozenset({"luxeed_r7", "luxeed_r7_2026_ev"}), _VCAM_DISCOVERY, "2026-08-chery-runtime",
 )
 BAIC_BINDING = _binding(
     "baic_ivcs", "BAIC", "BAIC", "https://apir.bjevssa.icvcs.com",

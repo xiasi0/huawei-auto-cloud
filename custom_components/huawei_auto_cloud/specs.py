@@ -300,6 +300,15 @@ SERES_COMMON_SENSORS: tuple[SensorSpec, ...] = (
         converter=_positive_number, sticky=True,
     ),
 )
+SENSORS_WITHOUT_FUEL: tuple[SensorSpec, ...] = tuple(
+    sensor
+    for sensor in SERES_COMMON_SENSORS
+    if sensor.key not in {
+        "fuel_wltc_remaining_mileage",
+        "fuel_remaining",
+        "average_fuel_consumption",
+    }
+)
 
 
 SPECS: tuple[VehicleSpec, ...] = (
@@ -348,15 +357,7 @@ SPECS: tuple[VehicleSpec, ...] = (
         key="seres_x1ev_24_c",
         enterprise_code="SERES",
         project_code="SERES-X1EV-24-C",
-        sensors=tuple(
-            sensor
-            for sensor in SERES_COMMON_SENSORS
-            if sensor.key not in {
-                "fuel_wltc_remaining_mileage",
-                "fuel_remaining",
-                "average_fuel_consumption",
-            }
-        ),
+        sensors=SENSORS_WITHOUT_FUEL,
         controls=frozenset({
             VehicleControl.AIR_CONDITIONER,
             VehicleControl.SENTRY_MODE,
@@ -392,6 +393,18 @@ SPECS: tuple[VehicleSpec, ...] = (
         enterprise_code="CHERY",
         project_code="EHY-REEV-2025MY",
         sensors=SERES_COMMON_SENSORS,
+        controls=frozenset({
+            VehicleControl.AIR_CONDITIONER,
+            VehicleControl.SENTRY_MODE,
+            VehicleControl.DEPARTURE_PLAN,
+        }),
+        supports_location=True,
+    ),
+    VehicleSpec(
+        key="luxeed_r7_2026_ev",
+        enterprise_code="CHERY",
+        project_code="EHY-2026MY1",
+        sensors=SENSORS_WITHOUT_FUEL,
         controls=frozenset({
             VehicleControl.AIR_CONDITIONER,
             VehicleControl.SENTRY_MODE,
