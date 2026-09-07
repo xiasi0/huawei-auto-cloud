@@ -417,11 +417,6 @@ SPECS: tuple[VehicleSpec, ...] = (
         enterprise_code="CHERY",
         project_code="EHY-2026MY1",
         sensors=SENSORS_WITHOUT_FUEL,
-        controls=frozenset({
-            VehicleControl.AIR_CONDITIONER,
-            VehicleControl.SENTRY_MODE,
-            VehicleControl.DEPARTURE_PLAN,
-        }),
         supports_location=True,
     ),
     VehicleSpec(
