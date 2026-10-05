@@ -143,7 +143,8 @@ BAIC_BINDING = _binding(
 )
 JAC_BINDING = _binding(
     "jac_ivcs", "JAC", "JAC", "https://apir.jacssa.icvcs.com",
-    frozenset(), _VCAM_DISCOVERY, "2026-08-jac-static",
+    frozenset({"jac_s800_reev"}), _VCAM_DISCOVERY, "2026-08-jac-static",
+    enabled_operations=_NORMAL_IVCS_OPERATIONS | {VehicleOperation.ENERGY_REPORT, VehicleOperation.LOCATION, VehicleOperation.FIRMWARE},
 )
 SAIC_BINDING = _binding(
     "saic_ivcs", "SAIC", "SAIC", "https://api-app.srih.icvcs.com",
