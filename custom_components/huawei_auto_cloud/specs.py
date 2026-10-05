@@ -443,6 +443,13 @@ SPECS: tuple[VehicleSpec, ...] = (
         supports_location=True,
     ),
     VehicleSpec(
+        key="jac_s800_reev",
+        enterprise_code="JAC",
+        project_code="CYC011-REEV",
+        sensors=SERES_COMMON_SENSORS,
+        supports_location=True,
+    ),
+    VehicleSpec(
         key="saic_h5",
         enterprise_code="SAIC",
         project_code="SHA-EREV",
