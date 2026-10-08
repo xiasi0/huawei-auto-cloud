@@ -325,6 +325,18 @@ SPECS: tuple[VehicleSpec, ...] = (
         supports_location=True,
     ),
     VehicleSpec(
+        key="seres_f3ev",
+        enterprise_code="SERES",
+        project_code="SERES-F3EV",
+        sensors=SENSORS_WITHOUT_FUEL,
+        controls=frozenset({
+            VehicleControl.AIR_CONDITIONER,
+            VehicleControl.SENTRY_MODE,
+            VehicleControl.DEPARTURE_PLAN,
+        }),
+        supports_location=True,
+    ),
+    VehicleSpec(
         key="seres_f2",
         enterprise_code="SERES",
         project_code="SERES-F2",
