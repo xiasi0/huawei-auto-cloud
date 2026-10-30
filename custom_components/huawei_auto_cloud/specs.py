@@ -490,6 +490,18 @@ SPECS: tuple[VehicleSpec, ...] = (
         supports_location=True,
     ),
     VehicleSpec(
+        key="luxeed_s7_ev",
+        enterprise_code="CHERY",
+        project_code="EH3",
+        sensors=SENSORS_WITHOUT_FUEL,
+        controls=frozenset({
+            VehicleControl.AIR_CONDITIONER,
+            VehicleControl.SENTRY_MODE,
+            VehicleControl.DEPARTURE_PLAN,
+        }),
+        supports_location=True,
+    ),
+    VehicleSpec(
         key="jac_s800_reev",
         enterprise_code="JAC",
         project_code="CYC011-REEV",
